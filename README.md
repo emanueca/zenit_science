@@ -20,12 +20,12 @@
 | Item | Qtd. | Notas |
 | --- | ---: | --- |
 | Arduino Uno (ou compatível) | 1 | Controle em tempo real |
-| Sensores Sharp IR analógicos (GP2Y0A21 / GP2Y0A02) | 2 (V1) / 4 (V2) | Posição relativa |
+| Sensores Sharp IR Infravermelho (20-80cm) (GP2Y0A21 / GP2Y0A02) | 2 (V1) / 4 (V2) | Posição relativa |
 | Servo Futaba S3003 | 1 (V1) / 2 (V2) | Inclinação da base |
 | Fonte 5V externa | 1 | ≥ 1A (V1) / 2–3A (V2); **recom.: UBEC 5V 3A** |
 | Protoboard e jumpers | — | Conexões |
-| Capacitor eletrolítico 100–470 µF | 1–2 | Perto do(s) servo(s) |
-| Base (MDF/acrílico) + dobradiças | — | Estrutura |
+| Capacitores e resustores | 1–5 | Perto do(s) servo(s) e ao lado do acrílico |
+| Base de acrílico (ou outro) + dobradiças | — | Estrutura |
 | Bola de pingue-pongue | 1 | Leve, boa resposta |
 
 ## 4) Ligações elétricas (V1 — 1D)
