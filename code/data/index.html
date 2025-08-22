@@ -1,11 +1,324 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-br">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ZENIT — PID Balance</title>
+  <meta name="description" content="Projeto ZENIT: controle PID aplicado — demonstração interativa, documentação, galeria e resultados." />
+  <style>
+    :root{
+      --bg:#f4f7ff;--card:#fff;--text:#0f172a;--muted:#475569;--border:#e2e8f0;
+      --primary:#2563eb;--primary-600:#1d4ed8;--accent:#60a5fa;
+      --radius:16px;--shadow:0 12px 28px rgba(15,23,42,.10);
+    }
+    @media (prefers-color-scheme: dark){
+      :root{--bg:#0b1220;--card:#0f172a;--text:#e5e7eb;--muted:#94a3b8;--border:#1f2937;--shadow:0 12px 28px rgba(0,0,0,.35);}
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;background:
+      radial-gradient(1100px 700px at 20% -10%, #e0f2fe 0%, transparent 55%),
+      radial-gradient(900px 600px at 100% 0%, #dbeafe 0%, transparent 60%),var(--bg);color:var(--text);}
+    a{color:var(--primary-600)}
+    .wrap{max-width:1100px;margin:0 auto;padding:0 20px}
+
+    /* Header */
+    .site-header{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.55);backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid var(--border)}
+    @media (prefers-color-scheme: dark){.site-header{background:rgba(15,23,42,.55)}}
+    .header-inner{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+    .brand{display:flex;align-items:center;gap:12px;color:inherit;text-decoration:none}
+    .logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--primary),var(--accent));box-shadow:0 8px 18px rgba(37,99,235,.25)}
+    .brand-text{font-weight:800;letter-spacing:.3px}
+    .site-nav{display:flex;gap:16px;align-items:center}
+    .site-nav a{color:inherit;text-decoration:none;padding:8px 10px;border-radius:10px}
+    .site-nav a:hover{background:rgba(99,102,241,.08)}
+    .btn{border:1px solid var(--border);background:var(--card);border-radius:999px;padding:8px 14px;cursor:pointer}
+    .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+    .btn.ghost{background:transparent}
+
+    /* Hero */
+    .hero{padding:64px 0}
+    .hero h1{font-size:40px;margin:0 0 8px}
+    .lead{color:var(--muted);max-width:75ch}
+    .accent{background:linear-gradient(90deg,var(--primary),#7c3aed);-webkit-background-clip:text;background-clip:text;color:transparent}
+    .cta-row{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}
+
+    /* Sections */
+    section.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin:24px 0}
+    h2{margin:0 0 10px;font-size:24px}
+    h3{margin:14px 0 8px}
+    .muted{color:var(--muted)}
+    .grid.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .note{border:1px solid var(--border);border-radius:12px;padding:12px}
+    .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#eef2ff;border:1px solid #e0e7ff;border-radius:8px;padding:2px 6px}
+    table{width:100%;border-collapse:collapse}
+    th,td{border:1px solid var(--border);padding:8px;text-align:left}
+    th{background:#f8fafc}
+    @media (prefers-color-scheme: dark){th{background:#0b1220}}
+
+    /* Simulator */
+    .simulator{display:grid;gap:12px}
+    canvas{display:block;width:100%;height:160px;background:linear-gradient(180deg,#fafafa,#f5f7fb);border:1px solid var(--border);border-radius:12px}
+    @media (prefers-color-scheme: dark){canvas{background:linear-gradient(180deg,#0e1425,#0b1220)}}
+    .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;align-items:center}
+    .controls label{display:flex;align-items:center;gap:8px}
+    .controls input[type=range]{width:100%}
+    .tiny{font-size:12px}
+
+    /* Gallery */
+    .gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+    .gallery figure{margin:0}
+    .gallery img{width:100%;height:140px;object-fit:cover;border-radius:12px;border:1px solid var(--border);cursor:pointer}
+    .uploader{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+    /* Lightbox */
+    .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:60}
+    .lightbox img{max-width:92vw;max-height:90vh;border-radius:16px}
+
+    /* Footer */
+    footer{padding:24px 0;color:var(--muted)}
+
+  </style>
 </head>
 <body>
-    
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a href="#home" class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <span class="brand-text">ZENIT<span class="muted"> — PID</span></span>
+      </a>
+      <nav class="site-nav" aria-label="Principal">
+        <a href="#demo">Demo</a>
+        <a href="#pid">PID</a>
+        <a href="#projeto">Projeto</a>
+        <a href="#resultados">Resultados</a>
+        <a href="#galeria">Galeria</a>
+        <a href="#docs">Docs</a>
+        <a href="#equipe">Equipe</a>
+        <button id="themeToggle" class="btn ghost" aria-label="Alternar tema">🌓</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" id="home">
+      <div class="hero-inner">
+        <h1>ZENIT — <span class="accent">Código vs. Gravidade</span></h1>
+        <p class="lead">Projeto de feira de ciências que une <strong>física</strong> e <strong>programação</strong> com um controlador <strong>PID</strong> para estabilizar um sistema instável. Abaixo você pode testar um <em>simulador</em> simples ajustando <span class="code">Kp</span>, <span class="code">Ki</span> e <span class="code">Kd</span>.</p>
+        <div class="cta-row">
+          <a href="#demo" class="btn primary">Ver demonstração</a>
+          <a href="#docs" class="btn">Documentos</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="demo" class="card">
+      <h2>🎛️ Demonstração interativa (simulador)</h2>
+      <p>Objetivo: manter a bolinha no centro (<span class="code">setpoint = 0</span>). A barra representa um trilho 1D; o PID aplica força para corrigir a posição.</p>
+      <div class="simulator">
+        <canvas id="simCanvas" width="800" height="160" aria-label="Simulador PID"></canvas>
+        <div class="controls">
+          <label>Kp <input type="range" id="kp" min="0" max="2" value="0.60" step="0.01"><span id="kpv">0.60</span></label>
+          <label>Ki <input type="range" id="ki" min="0" max="1" value="0.10" step="0.01"><span id="kiv">0.10</span></label>
+          <label>Kd <input type="range" id="kd" min="0" max="1" value="0.20" step="0.01"><span id="kdv">0.20</span></label>
+          <button id="disturb" class="btn">Distúrbio</button>
+          <button id="reset" class="btn ghost">Reset</button>
+        </div>
+        <p class="tiny muted">Modelo 1D simplificado (massa m=1, atrito leve). Dica: aumente <strong>Kd</strong> para reduzir overshoot; suba <strong>Ki</strong> devagar para remover erro final.</p>
+      </div>
+    </section>
+
+    <section id="pid" class="card">
+      <h2>📐 O que é PID?</h2>
+      <div class="grid two">
+        <div>
+          <p>Controlador <strong>P</strong>roporcional–<strong>I</strong>ntegral–<strong>D</strong>erivativo que corrige um erro <span class="code">e(t) = setpoint − medida</span> em tempo real.</p>
+          <ul>
+            <li><strong>P</strong> — corrige proporcionalmente ao erro (resposta forte/rápida).</li>
+            <li><strong>I</strong> — corrige erro acumulado (remove erro estacionário).</li>
+            <li><strong>D</strong> — reage à tendência (amortece overshoot/oscilações).</li>
+          </ul>
+          <p class="note"><strong>Lei de controle:</strong> <span class="code">u(t) = Kp·e + Ki∫e dt + Kd·de/dt</span></p>
+        </div>
+        <div class="note">
+          <h3>Tuning rápido</h3>
+          <ol>
+            <li>Comece com <strong>Ki = 0</strong> e <strong>Kd = 0</strong>.
+            <li>Suba <strong>Kp</strong> até quase oscilar.</li>
+            <li>Adicione <strong>Kd</strong> para amortecer.</li>
+            <li>Adicione <strong>Ki</strong> aos poucos para zerar o erro final.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section id="projeto" class="card">
+      <h2>🧩 Projeto (hardware)</h2>
+      <div class="grid two">
+        <div>
+          <h3>BOM (componentes)</h3>
+          <table>
+            <thead><tr><th>Item</th><th>Qtd.</th><th>Notas</th></tr></thead>
+            <tbody>
+              <tr><td>Arduino Uno (ou compatível)</td><td>1</td><td>Controle em tempo real</td></tr>
+              <tr><td>Sensores Sharp IR analógicos (GP2Y0A21 / GP2Y0A02)</td><td>2 / 4</td><td>Leitura de posição</td></tr>
+              <tr><td>Servo Futaba S3003</td><td>1 / 2</td><td>Atuação (inclinação)</td></tr>
+              <tr><td>Fonte 5V externa</td><td>1</td><td>≥ 1A (V1) / 2–3A (V2)</td></tr>
+              <tr><td>Protoboard, jumpers, capacitor 100–470 µF</td><td>—</td><td>Estabilização de alimentação</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Ligações rápidas (V1—1D)</h3>
+          <ul>
+            <li><strong>Sensores:</strong> VCC→5V | GND→GND | OUT→A0/A1</li>
+            <li><strong>Servo:</strong> vermelho→5V (fonte externa), marrom/preto→GND (comum), laranja→D9</li>
+            <li class="muted">Alimente servos com fonte externa e una os GNDs.</li>
+          </ul>
+          <h3>Código (Arduino)</h3>
+          <p>Veja o <a href="#docs">README</a> para o sketch PID 1D e dicas de afinação.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="resultados" class="card">
+      <h2>📊 Resultados & métricas</h2>
+      <ul>
+        <li><strong>Overshoot (%):</strong> quanto passa do centro.</li>
+        <li><strong>Tempo de acomodação (s):</strong> tempo para estabilizar (±5%).</li>
+        <li><strong>Erro estacionário:</strong> desvio final do setpoint.</li>
+        <li><strong>Frequência de amostragem (Hz):</strong> taxa do loop de controle.</li>
+      </ul>
+      <p class="tiny muted">Dica: registre os dados via Serial e gere um CSV para plotar os gráficos.</p>
+    </section>
+
+    <section id="galeria" class="card">
+      <h2>🖼️ Galeria</h2>
+      <div class="uploader">
+        <input type="file" id="fileInput" accept="image/*" multiple />
+        <button class="btn" id="clearGallery">Limpar</button>
+        <span class="muted tiny">(As imagens ficam só no seu navegador — não são enviadas.)</span>
+      </div>
+      <div class="gallery" id="gallery"></div>
+      <div class="lightbox" id="lightbox" role="dialog" aria-modal="true"><img id="lightImg" alt="Visualização"/></div>
+    </section>
+
+    <section id="docs" class="card">
+      <h2>📄 Documentos</h2>
+      <ul>
+        <li><a href="#" download>Resumo ABNT (PDF)</a> — substitua o link pelo seu arquivo.</li>
+        <li><a href="#" download>Pôster A4</a> — substitua o link pelo seu arquivo.</li>
+        <li><a href="#" download>Slides</a> — substitua o link pelo seu arquivo.</li>
+        <li><a href="#" download>CSV de medições</a> — substitua o link pelo seu arquivo.</li>
+      </ul>
+    </section>
+
+    <section id="equipe" class="card">
+      <h2>👥 Equipe & Créditos</h2>
+      <p><strong>Autor:</strong> Emanuel (IFFar) • <strong>Projeto:</strong> ZENIT — PID Balance • Agradecimentos: colegas, orientação e banca avaliadora.</p>
+    </section>
+
+    <footer class="wrap">
+      <p>© ZENIT — PID Balance • <span class="muted">Site estático single‑file</span></p>
+    </footer>
+  </main>
+
+  <script>
+    // ===== Tema claro/escuro =====
+    const toggle = document.getElementById('themeToggle');
+    toggle?.addEventListener('click', ()=>{
+      document.documentElement.style.colorScheme =
+        (document.documentElement.style.colorScheme === 'dark') ? 'light' : 'dark';
+    });
+
+    // ===== Simulador PID 1D =====
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    const kpEl = document.getElementById('kp');
+    const kiEl = document.getElementById('ki');
+    const kdEl = document.getElementById('kd');
+    const kpv = document.getElementById('kpv');
+    const kiv = document.getElementById('kiv');
+    const kdv = document.getElementById('kdv');
+    const disturbBtn = document.getElementById('disturb');
+    const resetBtn = document.getElementById('reset');
+
+    let x = 0, v = 0; // posição e velocidade
+    let integ = 0, lastErr = 0;
+    const setpoint = 0; // centro
+    let lastTime = performance.now();
+
+    function step(){
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastTime) / 1000); // s, cap a 50 ms
+      lastTime = now;
+
+      const Kp = parseFloat(kpEl.value);
+      const Ki = parseFloat(kiEl.value);
+      const Kd = parseFloat(kdEl.value);
+      kpv.textContent = Kp.toFixed(2); kiv.textContent = Ki.toFixed(2); kdv.textContent = Kd.toFixed(2);
+
+      // Erro e PID
+      const err = setpoint - x;
+      integ += err * dt; integ = Math.max(-3, Math.min(3, integ)); // anti-windup
+      const deriv = (err - lastErr) / Math.max(1e-4, dt);
+      lastErr = err;
+      const u = Kp*err + Ki*integ + Kd*deriv; // força de controle
+
+      // Dinâmica simples m=1 com atrito leve
+      const friction = 0.6; // amortecimento
+      v += (u - friction*v) * dt;
+      x += v * dt; // integra posição
+      x = Math.max(-1.2, Math.min(1.2, x));
+
+      // Desenho
+      draw();
+      requestAnimationFrame(step);
+    }
+
+    function draw(){
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0,0,w,h);
+      // Trilha
+      const midY = h*0.5; ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(99,102,241,.35)';
+      ctx.beginPath(); ctx.moveTo(20, midY); ctx.lineTo(w-20, midY); ctx.stroke();
+      // Centro
+      ctx.strokeStyle = 'rgba(37,99,235,.8)'; ctx.setLineDash([6,6]);
+      ctx.beginPath(); const cx = w/2; ctx.moveTo(cx, midY-30); ctx.lineTo(cx, midY+30); ctx.stroke(); ctx.setLineDash([]);
+      // Bola
+      const px = w/2 + x * (w*0.4); const r = 12;
+      const grad = ctx.createRadialGradient(px-4, midY-4, 2, px, midY, 18);
+      grad.addColorStop(0,'#ffffff'); grad.addColorStop(1,'#93c5fd');
+      ctx.fillStyle = grad; ctx.strokeStyle = 'rgba(15,23,42,.3)';
+      ctx.beginPath(); ctx.arc(px, midY, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+    }
+
+    disturbBtn?.addEventListener('click', ()=>{ v += (Math.random() > .5 ? 1 : -1) * (0.8 + Math.random()*0.8); });
+    resetBtn?.addEventListener('click', ()=>{ x = 0; v = 0; integ = 0; lastErr = 0; });
+    step();
+
+    // ===== Galeria local (client‑side) =====
+    const input = document.getElementById('fileInput');
+    const gallery = document.getElementById('gallery');
+    const lightbox = document.getElementById('lightbox');
+    const lightImg = document.getElementById('lightImg');
+    const clearBtn = document.getElementById('clearGallery');
+
+    input?.addEventListener('change', (e)=>{
+      const files = Array.from(e.target.files || []);
+      files.forEach(file=>{
+        if(!file.type.startsWith('image/')) return;
+        const url = URL.createObjectURL(file);
+        const fig = document.createElement('figure');
+        const img = document.createElement('img');
+        img.src = url; img.alt = file.name;
+        img.addEventListener('click', ()=>{ lightImg.src = url; lightbox.style.display='flex'; });
+        fig.appendChild(img); gallery.appendChild(fig);
+      });
+      input.value = '';
+    });
+    lightbox?.addEventListener('click', ()=>{ lightbox.style.display='none'; lightImg.src=''; });
+    clearBtn?.addEventListener('click', ()=>{ gallery.innerHTML=''; });
+  </script>
 </body>
 </html>
