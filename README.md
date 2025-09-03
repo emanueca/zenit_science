@@ -1,206 +1,217 @@
-# ZENIT — PID Balance
+# ZENIT — PID Balance (Gangorra)
 
-> **Slogan**: _Código vs. Gravidade._  
-> **Resumo**: Sistema didático de **controle PID** (Proporcional–Integral–Derivativo) que mantém uma **bolinha** estável sobre uma base inclinável. Integra **física** (gravidade, dinâmica, atrito) e **programação** (amostragem, filtragem, controle) com **Arduino**, **sensores infravermelhos Sharp** e **servos**.
+> **Slogan:** *Código vs. Gravidade*
+> **Resumo:** Protótipo didático que estabiliza uma **bolinha de pingue-pongue** em uma **gangorra 1D** usando **Arduino UNO**, **sensor Sharp GP2Y0A21** (distância) e **servo**. O Arduino mede a distância, calcula o **erro** e aplica **PID** para inclinar a barra e manter a bola em equilíbrio.
 
 ---
 
-## 1) Objetivos
-- Mostrar, de forma interativa, como um **PID** estabiliza um sistema **instável**.
-- Medir **posição** da bola, calcular **erro** e atuar nos **servos** para corrigir a inclinação.
-- Exibir **overshoot**, **tempo de acomodação** e **erro estacionário**.
+## 1) Código principal (Arduino UNO)
 
-## 2) Protótipos
-- **V1 — 1D (Gangorra)**: 2 sensores Sharp (extremidades) → 1 servo (ex.: Futaba S3003).
-- **V2 — 2D (Plataforma)**: 4 sensores Sharp (cantos) → 2 servos (pitch/roll).
+> Fonte e créditos do código base: **ELECTRONOOBS** (links no cabeçalho).
+> Use este sketch como referência inicial e ajuste **Kp/Ki/Kd**, **setpoint** e o **mapeamento** conforme sua mecânica.
 
-> Para feira, a V1 já impressiona e facilita o _tuning_. A V2 é mais "wow" e exige mais ajuste.
-
-## 3) Componentes (BOM)
-| Item | Qtd. | Notas |
-| --- | ---: | --- |
-| Arduino Uno (ou compatível) | 1 | Controle em tempo real |
-| Sensores Sharp IR Infravermelho (20-80cm) (GP2Y0A21 / GP2Y0A02) | 2 (V1) / 4 (V2) | Posição relativa |
-| Servo Futaba S3003 | 1 (V1) / 2 (V2) | Inclinação da base |
-| Fonte 5V externa | 1 | ≥ 1A (V1) / 2–3A (V2); **recom.: UBEC 5V 3A** |
-| Protoboard e jumpers | — | Conexões |
-| Capacitores e resustores | 1–5 | Perto do(s) servo(s) e ao lado do acrílico |
-| Base de acrílico (ou outro) + dobradiças | — | Estrutura |
-| Bola de pingue-pongue | 1 | Leve, boa resposta |
-
-## 4) Ligações elétricas (V1 — 1D)
-**Sensores Sharp (2x)**
-- VCC → 5V  
-- GND → GND  
-- OUT → **A0 (esquerda)**, **A1 (direita)**
-
-**Servo Futaba S3003 (1x)**
-- Vermelho → **5V da fonte externa**  
-- Marrom/Preto → **GND comum**  
-- Laranja/Branco → **D9** (sinal PWM)
-
-> **Importante**: alimente **servos** com **fonte externa**; una os **GNDs** (Arduino e fonte) e coloque **100–470 µF** entre 5V e GND perto do(s) servo(s).
-
-## 5) Arquitetura de controle
-```
-Sensores (tensão analógica) → Leitura (ADC) → Filtragem → Estimativa de posição
-→ Erro (setpoint - posição) → PID → Ângulo(s) do(s) servo(s) → Inclinação da base
-→ Bola move → novos sensores → (loop a cada Δt)
-```
-
-**Estimativa de posição (V1)**  
-Use a **diferença normalizada**:
-```
-pos ≈ (Right - Left) / (Right + Left)   // ~intervalo [-1, +1]
-```
-Aplique média móvel/mediana para reduzir ruído.
-
-## 6) Código de exemplo (V1 — 1D, Arduino)
 ```cpp
+/* PID balance code with ping pong ball and distance sensor sharp 2y0a21
+ *  by ELECTRONOOBS: https://www.youtube.com/channel/UCjiVhIvGmRZixSzupD0sS9Q
+ *  Tutorial: http://electronoobs.com/eng_arduino_tut100.php
+ *  Code: http://electronoobs.com/eng_arduino_tut100_code1.php
+ *  Scheamtic: http://electronoobs.com/eng_arduino_tut100_sch1.php 
+ *  3D parts: http://electronoobs.com/eng_arduino_tut100_stl1.php   
+ */
+#include <Wire.h>
 #include <Servo.h>
 
-// Pinos
-const int PIN_LEFT  = A0;
-const int PIN_RIGHT = A1;
-const int PIN_SERVO = 9;
+///////////////////////Inputs/outputs///////////////////////
+int Analog_in = A0;
+Servo myservo;  // create servo object to control a servo, later attatched to D9
+///////////////////////////////////////////////////////
 
-// PID
-double Kp = 22.0, Ki = 2.0, Kd = 4.0;  // ponto de partida; ajuste em teste
-double setpoint = 0.0;                 // centro
-double integral = 0.0, lastError = 0.0;
-unsigned long lastMicros = 0;
+////////////////////////Variables///////////////////////
+int Read = 0;
+float distance = 0.0;
+float elapsedTime, time, timePrev;        //Variables for time control
+float distance_previous_error, distance_error;
+int period = 50;  //Refresh rate period of the loop is 50ms
+///////////////////////////////////////////////////////
 
-// Servo
-Servo servo;
-const int SERVO_CENTER = 90;    // neutro do mecanismo
-const int SERVO_RANGE  = 20;    // ± amplitude (graus)
+///////////////////PID constants///////////////////////
+float kp=8; //Mine was 8
+float ki=0.2; //Mine was 0.2
+float kd=3100; //Mine was 3100
+float distance_setpoint = 21;           //Should be the distance from sensor to the middle of the bar in mm
+float PID_p, PID_i, PID_d, PID_total;
+///////////////////////////////////////////////////////
 
-// Filtro exponencial simples
-static double Lf=0, Rf=0;
-static double ema(double prev, double value, double alpha){
-  return alpha*value + (1.0 - alpha)*prev;
+void setup() {
+  //analogReference(EXTERNAL);
+  Serial.begin(9600);  
+  myservo.attach(9);  // attaches the servo on pin 9 to the servo object
+  myservo.write(125); //Put the servco at angle 125, so the balance is in the middle
+  pinMode(Analog_in,INPUT);  
+  time = millis();
 }
 
-void setup(){
-  servo.attach(PIN_SERVO);
-  servo.write(SERVO_CENTER);
-  lastMicros = micros();
-  Serial.begin(115200);
+void loop() {
+  if (millis() > time+period)
+  {
+    time = millis();    
+    distance = get_dist(100);   
+    distance_error = distance_setpoint - distance;   
+    PID_p = kp * distance_error;
+    float dist_diference = distance_error - distance_previous_error;     
+    PID_d = kd*((distance_error - distance_previous_error)/period);
+      
+    if(-3 < distance_error && distance_error < 3)
+    {
+      PID_i = PID_i + (ki * distance_error);
+    }
+    else
+    {
+      PID_i = 0;
+    }
+  
+    PID_total = PID_p + PID_i + PID_d;  
+    PID_total = map(PID_total, -150, 150, 0, 150);
+  
+    if(PID_total < 20){PID_total = 20;}
+    if(PID_total > 160) {PID_total = 160; } 
+  
+    myservo.write(PID_total+30);  
+    distance_previous_error = distance_error;
+  }
 }
 
-void loop(){
-  // dt
-  unsigned long now = micros();
-  double dt = (now - lastMicros) / 1e6; // s
-  if(dt < 0.005) return;                // ~200 Hz máx
-  lastMicros = now;
+float get_dist(int n)
+{
+  long sum=0;
+  for(int i=0;i<n;i++)
+  {
+    sum=sum+analogRead(Analog_in);
+  }  
+  float adc=sum/n;
+  //float volts = analogRead(adc)*0.0048828125;  // value from sensor * (5/1024)
+  //float volts = sum*0.003222656;  // value from sensor * (3.3/1024) EXTERNAL analog refference
 
-  // Leitura e filtragem
-  int L = analogRead(PIN_LEFT);
-  int R = analogRead(PIN_RIGHT);
-  Lf = ema(Lf, (double)L, 0.3);
-  Rf = ema(Rf, (double)R, 0.3);
-
-  // Posição normalizada
-  double sum = max(1.0, Lf + Rf);
-  double pos = (Rf - Lf) / sum;   // ~[-1,+1]
-  double error = setpoint - pos;
-
-  // PID
-  integral += error * dt;
-  integral = constrain(integral, -0.5, 0.5); // anti-windup simples
-  double derivative = (error - lastError) / dt;
-  double u = Kp*error + Ki*integral + Kd*derivative;
-  lastError = error;
-
-  // Saída
-  int angle = SERVO_CENTER + (int)constrain(u * SERVO_RANGE, -SERVO_RANGE, SERVO_RANGE);
-  servo.write(angle);
-
-  // Debug
-  Serial.print("pos:"); Serial.print(pos, 3);
-  Serial.print(", err:"); Serial.print(error, 3);
-  Serial.print(", u:"); Serial.print(u, 3);
-  Serial.print(", ang:"); Serial.println(angle);
+  float distance_cm = 17569.7 * pow(adc, -1.2062);
+  //float distance_cm = 13*pow(volts, -1); 
+  return(distance_cm);
 }
 ```
-> **Se inverter** (piorar o erro), troque o sinal de `pos` ou inverta `Kp` (ou troque LEFT/RIGHT).
 
-## 7) Afinar o PID (_tuning_)
-1. **Comece com Ki = 0, Kd = 0** e **aumente Kp** até oscilar ao redor do centro.  
-2. **Adicione Kd** para amortecer (reduz overshoot).  
-3. **Adicione Ki** para remover o erro em regime (devagar para não oscilar).  
-4. Use o **Serial Plotter** para ver `pos`, `error`, `u` e medir **tempo de acomodação**.  
-5. Dê pequenos toques na bola e observe a recuperação; ajuste **Kp/Kd**.
-
-## 8) Como rodar
-1. Instale **Arduino IDE** (a lib `Servo.h` já vem).  
-2. Carregue o código no **Uno**.  
-3. Alimente **servos** com **fonte 5V externa** e **GND comum**.  
-4. Abra o **Serial Plotter** (115200 baud).  
-5. Ajuste **Kp/Ki/Kd** e recompile.
-
-## 9) Dicas mecânicas
-- **Fricção baixa** e **plataforma rígida** melhoram a resposta.  
-- Use **curso angular pequeno** (±10–20°); grandes inclinações saturam.  
-- Centralize pivô/servos para reduzir esforço.  
-- **S3003** aguenta V1; para V2, avalie **MG996R** (mais torque).
-
-## 10) Segurança
-- **Não** alimente servos pesados pela USB.  
-- Coloque **capacitor** perto do(s) servo(s).  
-- Prenda fios, isole contatos, tenha **chave liga/desliga** (e **porta-fusível** se usar baterias).
-
-## 11) Métricas
-- **Overshoot (%):** quanto passa do centro.  
-- **Tempo de acomodação (s):** até estabilizar (±5%).  
-- **Erro estacionário:** desvio final.  
-- **Frequência de amostragem (Hz)** e **latência** do loop.
-
-## 12) Estrutura de pastas (sugestão)
-```
-/ZENIT
-  ├─ firmware/
-  │   └─ zenit_pid_1d.ino
-  ├─ cad/                  # peças da base (opcional)
-  ├─ docs/
-  │   ├─ cartaz_a4.pdf
-  │   └─ ensaio_metricas.csv
-  ├─ wiring/
-  │   └─ esquema_v1.png
-  └─ README.md
-```
-
-## 13) FAQ
-<details>
-<summary><strong>Posso usar só 1 sensor?</strong></summary>
-Funciona, mas com 2 (ou 4) a posição fica mais robusta.
-</details>
-
-<details>
-<summary><strong>Preciso converter tensão em distância exata?</strong></summary>
-Para controle relativo em 1D, a <em>diferença normalizada</em> já funciona muito bem.
-</details>
-
-<details>
-<summary><strong>O servo treme parado.</strong></summary>
-Reduza <strong>Kp</strong> ou aplique uma <em>zona morta</em> (deadband) em torno do zero.
-</details>
-
-## 14) Licença
-Distribuído sob a **MIT License**.
-
-## 15) Créditos
-- **Autor:** Emanuel (IFFar)  
-- **Projeto e software:** ZENIT — PID Balance  
-- **Agradecimentos:** colegas, orientação e banca avaliadora
-
-## 16) Pitch (30–40 s)
-> “O ZENIT conecta **física** e **programação**: medimos a posição da bola com sensores IR, rodamos um **PID** em tempo real no Arduino e inclinamos a base com servo(s) para compensar a **gravidade**. Otimizamos **Kp/Ki/Kd** para reduzir **overshoot** e **tempo de acomodação**, como fazem **drones** e **robôs**. A demonstração mostra a recuperação após perturbações, provando controle **algorítmico** do equilíbrio.”
+> **Dica:** se a gangorra **inclina para o lado errado**, inverta o sinal (troque `distance_setpoint - distance` por `distance - distance_setpoint`) **ou** ajuste o lado mecânico do servo.
 
 ---
 
-### Como usar este arquivo
-- Salve este conteúdo como **`README.md`** na raiz do repositório.  
-- O GitHub renderiza **Markdown + HTML básico** (sem `<style>`/CSS).  
-- Imagens opcionais podem ser vinculadas: `![esquema](wiring/esquema_v1.png)`.
+## 2) Materiais (BOM) — incluindo as **peças 3D** do protótipo
+
+| Grupo                    | Item                                     | Qtd. | Observações                                                             |
+| ------------------------ | ---------------------------------------- | ---: | ----------------------------------------------------------------------- |
+| **Controle**             | Arduino **UNO** (ou compatível)          |    1 | 16 MHz; USB para programação                                            |
+| **Sensor**               | **Sharp GP2Y0A21** (10–80 cm)            |    1 | Apontado para a bola; fixar firme; cabo 3 vias                          |
+| **Atuação**              | **Servo** padrão (ex.: Futaba **S3003**) |    1 | 4,8–6 V; torque típico 3–4 kg·cm (para 1D é suficiente)                 |
+| **Energia**              | **Fonte 5 V** externa (≥ 2 A)            |    1 | Não alimente servo pela USB                                             |
+|                          | Capacitor **100–470 µF** (5 V)           |    1 | Próximo ao servo (anti-ruído)                                           |
+| **Conexões**             | Protoboard + jumpers                     |    — | GND comum entre Arduino e fonte dos servos                              |
+| **Bola**                 | **Pingue-pongue**                        |    1 | Superfície fosca ajuda o IR                                             |
+| **Estrutura (3D/laser)** | **Base inferior**                        |    1 | Chapa 200×200 mm (MDF 3 mm / acrílico)                                  |
+|                          | **Suporte do servo** (3D)                |    1 | Suporte em L com furação padrão de servo                                |
+|                          | **Braço/berço da gangorra** (3D)         |    1 | Peça central que apoia a barra; encaixe no pivô                         |
+|                          | **Pivô/fulcro** (3D ou parafuso + bucha) |    1 | Pode usar **parafuso M4** + porcas/arruelas; opcional **rolamento 608** |
+|                          | **Barra da gangorra**                    |    1 | 200–250 mm de comprimento; canal raso central para a bola               |
+|                          | **Suporte do Sharp** (3D)                |    1 | Mantém o sensor apontado e na altura correta                            |
+|                          | **Adaptador para horn** (3D)             |    1 | Acopla horn do servo à barra (ou bieleta curta)                         |
+|                          | **Espaçadores/colunas** (3D)             |    4 | Fixação entre base e nível da barra                                     |
+|                          | **Abas/fixadores** (3D)                  |  2–4 | Para prender cabos/sensor na base                                       |
+
+> As **peças 3D** acima correspondem ao que se vê no protótipo: suporte do servo, berço/pivô da barra, suporte do sensor, adaptador pro horn e espaçadores. Se quiser, eu te entrego os **STLs** com furação já casada (servo padrão + M3/M4).
+
+---
+
+## 3) Ligações elétricas (UNO)
+
+**Sharp GP2Y0A21**
+
+* **Vcc** → **5 V**
+* **GND** → **GND**
+* **OUT** → **A0** (igual ao `Analog_in` no código)
+
+**Servo (S3003)**
+
+* **Vermelho** → **5 V da fonte externa**
+* **Marrom/Preto** → **GND** (comum ao GND do Arduino)
+* **Laranja/Branco** (sinal) → **D9**
+
+> **Crítico:** **GND comum** entre a fonte dos servos e o Arduino. Sem isso, o servo “pira” ou nem mexe.
+
+---
+
+## 4) Montagem mecânica (1D)
+
+1. **Base** fixa (MDF/acrílico).
+2. **Suporte do servo** centralizado, horn alinhado ao **centro da barra**.
+3. **Pivô/fulcro** no centro da barra (reduz esforço do servo).
+4. **Bola** rola sobre a barra; **sensor Sharp** posicionado lateralmente apontando para a bola (ou para a região central onde a bola passa).
+5. Curso mecânico pequeno (±10–15°) evita saturação e melhora estabilidade.
+
+---
+
+## 5) Calibração do **Sharp GP2Y0A21** (10–80 cm)
+
+* **Faixa doce para o projeto:** \~**15–40 cm** da bola ao sensor.
+* Faça uma **curva experimental**: marque 15, 20, 25, 30, 35 cm; leia `analogRead()` e confira a curva `dist = 17569.7 * adc^-1.2062`.
+* Se a leitura **satura** muito perto/longe, **realoque o sensor** ou ajuste o **setpoint** (`distance_setpoint`).
+* **Luz ambiente** e superfícies brilhantes atrapalham: use **anteparo** (tubinho preto) no sensor e **bola fosca**.
+
+---
+
+## 6) *Tuning* do PID (prático)
+
+1. **Ki = 0**, **Kd = 0** → suba o **Kp** até começar a oscilar (margem).
+2. Adicione **Kd** para **amortecer** (reduz overshoot).
+3. Introduza **Ki** aos poucos para remover **erro em regime** (não exagere para não “embalar”).
+4. Use o **Serial Plotter** para enxergar **erro** e **resposta**.
+5. Dê pequenos **toques** na barra/bola e observe o **tempo de acomodação**.
+
+---
+
+## 7) Métricas que impressionam a banca
+
+* **Overshoot (%)** — pico inicial acima do setpoint.
+* **Tempo de acomodação (s)** — até ficar estável (±5%).
+* **Erro estacionário** — desvio final médio.
+* **Taxa do loop (Hz)** — `period=50 ms` ≈ **20 Hz** (pode reduzir para 20–30 ms se a mecânica permitir).
+
+---
+
+## 8) Roadmap (opcional)
+
+* **2D** (plataforma com 2 servos) usando **4 Sharp** ou **touch resistivo 4-fios**.
+* **Telemetria** (plot x tempo) via Serial/Processing/Excel.
+* **Modo competição** (tempo no centro / checkpoints).
+
+---
+
+## 9) Como rodar
+
+1. Arduino IDE → selecione **Arduino UNO**.
+2. Cole o **código principal** acima.
+3. Ligue o hardware (servo em fonte **5 V externa**, **GND comum**).
+4. Faça a **calibração** do Sharp e ajuste `distance_setpoint`.
+5. Ajuste **Kp/Ki/Kd** até estabilizar.
+
+---
+
+## 10) Segurança
+
+* Nunca alimente **servo** pesado pela **USB**.
+* Use **capacitor** próximo ao servo.
+* **Chave liga/desliga** e cabos bem fixos.
+
+---
+
+## 11) Licença & Créditos
+
+* **Código base e ideia do sketch:** ELECTRONOOBS (links no cabeçalho do código).
+* **Adaptações e documentação:** Equipe **ZENIT (IFFar)**.
+* **Uso educacional**.
+
