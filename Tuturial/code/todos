@@ -1,1 +1,481 @@
+ /*
+ * ZENIT – MultiTest + PID Balance (Menu 1..5)
+ *
+ * Mapeamento de modos:
+ *  1) Leitura do sensor (ADC/Distância com filtro)
+ *  2) Servo Sweep + calibração (checar MIN, MAX e CENTER)
+ *  3) Painel interativo (tabela de atalhos: buzzer e Kp/Ki/Kd ao vivo) + Teste de centro
+ *  4) Teste Integrado (LED fade + Buzzer + Servo varrendo + Sensor no Serial Plotter)
+ *  5) Balança PID (teu "4, nossa versão", ajustável ao vivo)
+ *
+ * ======= ATALHOS GERAIS NO SERIAL (linha inteira, ex: "kp 9.0") =======
+ *  1..5         -> entra no modo
+ *  q            -> sair do modo e voltar ao menu
+ *  help         -> mostra ajuda
+ *  p            -> imprime parâmetros
+ *  i            -> inverte o sentido do controle do PID (modo 5)
+ *  kp X | ki X | kd X      -> define ganhos do PID
+ *  mid X                    -> define alvo (cm, padrão 15.5)
+ *  center N | min N | max N -> define ângulos do servo (graus)
+ *  form 1|2|3               -> fórmula do sensor (1=power law; 2=6787/(adc-3)-4; 3=linear tosco)
+ *  ema X                    -> define alpha do filtro EMA (0..1)
+ *  r                        -> zera integrador do PID
+ *
+ * ======= ATALHOS ESPECÍFICOS DO MODO 3 (interativo) – DIGITE APENAS A TECLA =======
+ *  Buzzer:  1=Silêncio  2=Bip curto  3=Bip longo  4=Bip duplo  5=Tremolo  6=Alerta
+ *  Kp:      g=0.5 h=1.0 j=2.0 k=4.0 l=8.0
+ *  Ki:      m=0.00 n=0.05 o=0.10 p=0.20 r=0.30
+ *  Kd:      a=100  s=500  d=1000  f=2000  e=4000
+ *  c        -> bip de “centro” (teste rápido)
+ *  t        -> reimprime a tabela do modo 3
+ *
+ * Pinos: Sensor IR A0 | Servo 9 | LED 6 | Buzzer 3
+ * Servo de referência: Futaba S3003
+ */
 
+#include <Servo.h>
+#include <math.h>
+
+#define SERIAL_BAUD 115200
+
+// ==== Hardware pins ====
+const int SENSOR_PIN = A0;
+const int SERVO_PIN  = 9;
+const int LED_PIN    = 6;
+const int BUZZER_PIN = 3;
+
+Servo myservo;
+
+// ==== Servo (ajuste conforme seu hardware) ====
+int SERVO_CENTER = 82;   // centro mecânico
+int SERVO_MIN    = 65;   // limite mecânico seguro
+int SERVO_MAX    = 100;  // limite mecânico seguro
+
+// ==== Sensor / distância ====
+float MID_CM = 15.5f;     // alvo (meio da régua)
+int   sensorFormula = 2;  // 1=power-law; 2=6787/(adc-3)-4 (GP2Y0A21 10–80cm); 3=linear tosco
+float emaAlpha = 0.25f;   // filtro EMA
+float distEma  = NAN;
+
+// ==== PID (modo 5) ====
+float kp = 9.0f, ki = 0.30f, kd = 3900.0f; // teus defaults
+float Iacc = 0.0f;
+float lastErr = 0.0f;
+unsigned long lastPIDms = 0;
+bool invertOutput = false;
+
+// Anti-windup
+float Imin = -400.0f, Imax = 400.0f;
+
+// Limites de operação
+const float MAX_CONTROL_CM = 20.0f; // saturação útil
+const float NO_BALL_CM     = 40.0f; // sem bola
+
+// Slew-rate para suavizar servo (graus por passo PID)
+bool useSlew = true;
+float maxDeltaDeg = 2.0f;
+
+// ==== Estado geral ====
+enum Mode { MENU=0, M1_SENSOR, M2_SERVO, M3_INTERATIVO, M4_INTEGRADO, M5_BALANCA };
+Mode currentMode = MENU;
+
+// ==== Prototipos ====
+void printMenu();
+void printHelp();
+void printParams();
+void handleSerialLine(char *line);
+void handleKey_M3(char c);
+float readDistanceRaw(int n);
+float adcToCm(float adc);
+float readDistanceCm(int n);
+void buzzerPattern(uint8_t pattern);
+void mode1_tick();
+void mode2_tick();
+void mode3_tick();
+void mode4_tick();
+void mode5_tick();
+void setServoAngle(int ang);
+
+// ==== Util: leitura de linha do Serial ====
+const uint8_t RXBUF = 64;
+char lineBuf[RXBUF];
+uint8_t lineLen = 0;
+
+void setup() {
+  Serial.begin(SERIAL_BAUD);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  myservo.attach(SERVO_PIN);
+  myservo.write(SERVO_CENTER);
+
+  Serial.println(F("\nZENIT MultiTest pronto."));
+  printMenu();
+}
+
+void loop() {
+  // ---- Parser de linha (com NL/CR) ----
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (lineLen > 0) {
+        lineBuf[lineLen] = '\0';
+        handleSerialLine(lineBuf);
+        lineLen = 0;
+      }
+    } else if (lineLen < RXBUF-1) {
+      lineBuf[lineLen++] = c;
+    }
+  }
+
+  // ---- Execução por modo ----
+  switch (currentMode) {
+    case MENU: /* nada */ break;
+    case M1_SENSOR:     mode1_tick(); break;
+    case M2_SERVO:      mode2_tick(); break;
+    case M3_INTERATIVO: mode3_tick(); break;
+    case M4_INTEGRADO:  mode4_tick(); break;
+    case M5_BALANCA:    mode5_tick(); break;
+  }
+}
+
+// ==================== UI ====================
+void printMenu() {
+  Serial.println(F("\n===== MENU ====="));
+  Serial.println(F("1) Leitura do sensor (ADC/Dist)"));
+  Serial.println(F("2) Servo sweep + calibracao"));
+  Serial.println(F("3) Painel interativo (buzzer + Kp/Ki/Kd)"));
+  Serial.println(F("4) Teste integrado (LED/Buzzer/Servo/Sensor)"));
+  Serial.println(F("5) BALANCA PID"));
+  Serial.println(F("----------------"));
+  Serial.println(F("help -> ajuda | p -> parametros"));
+}
+
+void printHelp() {
+  Serial.println(F("\nComandos (linha inteira):"));
+  Serial.println(F(" 1..5, q, help, p, i, r"));
+  Serial.println(F(" kp X | ki X | kd X"));
+  Serial.println(F(" mid X (cm) | ema X (0..1)"));
+  Serial.println(F(" center N | min N | max N"));
+  Serial.println(F(" form 1|2|3"));
+  Serial.println(F("\nModo 3 (tecla única):"));
+  Serial.println(F("  Buzzer: 1=sil 2=curto 3=longo 4=duplo 5=tremolo 6=alerta"));
+  Serial.println(F("  Kp: g=0.5 h=1.0 j=2.0 k=4.0 l=8.0"));
+  Serial.println(F("  Ki: m=0.00 n=0.05 o=0.10 p=0.20 r=0.30"));
+  Serial.println(F("  Kd: a=100 s=500 d=1000 f=2000 e=4000"));
+  Serial.println(F("  c=teste centro, t=reimprime tabela\n"));
+}
+
+void printParams() {
+  Serial.println(F("\n==== PARAMS ===="));
+  Serial.print(F("Servo: center=")); Serial.print(SERVO_CENTER);
+  Serial.print(F(" min=")); Serial.print(SERVO_MIN);
+  Serial.print(F(" max=")); Serial.println(SERVO_MAX);
+  Serial.print(F("Sensor: form=")); Serial.print(sensorFormula);
+  Serial.print(F(" ema=")); Serial.println(emaAlpha, 2);
+  Serial.print(F("Alvo (mid cm): ")); Serial.println(MID_CM, 2);
+  Serial.print(F("PID: kp=")); Serial.print(kp, 3);
+  Serial.print(F(" ki=")); Serial.print(ki, 3);
+  Serial.print(F(" kd=")); Serial.println(kd, 3);
+  Serial.print(F("Invert=")); Serial.println(invertOutput ? F("ON") : F("OFF"));
+  Serial.println(F("==============="));
+}
+
+void handleSerialLine(char *line) {
+  // Muda modo se for número simples
+  if (strlen(line) == 1 && line[0] >= '1' && line[0] <= '5') {
+    currentMode = (Mode)(line[0]-'0');
+    if (currentMode == MENU) currentMode = M1_SENSOR;
+    Serial.print(F(">> Modo ")); Serial.println((int)currentMode);
+    if (currentMode == M3_INTERATIVO) {
+      Serial.println(F("\n=== Modo 3 – Painel Interativo ==="));
+      printHelp();
+    }
+    if (currentMode == M4_INTEGRADO) {
+      Serial.println(F("\n=== Modo 4 – Teste Integrado (use Serial Plotter) ==="));
+    }
+    if (currentMode == M5_BALANCA) {
+      Serial.println(F("\n=== Modo 5 – BALANCA PID ==="));
+    }
+    return;
+  }
+
+  // Comandos curtos
+  if (!strcmp(line,"q")) { currentMode = MENU; printMenu(); return; }
+  if (!strcmp(line,"help")) { printHelp(); return; }
+  if (!strcmp(line,"p")) { printParams(); return; }
+  if (!strcmp(line,"i")) { invertOutput = !invertOutput; Serial.println(invertOutput?F("Invertido=ON"):F("Invertido=OFF")); return; }
+  if (!strcmp(line,"r")) { Iacc = 0; lastErr=0; Serial.println(F("Integrador zerado.")); return; }
+
+  // Ajustes com valor
+  float f; int n;
+  if (sscanf(line,"kp %f",&f)==1) { kp=f; Serial.print(F("kp=")); Serial.println(kp,3); return; }
+  if (sscanf(line,"ki %f",&f)==1) { ki=f; Serial.print(F("ki=")); Serial.println(ki,3); return; }
+  if (sscanf(line,"kd %f",&f)==1) { kd=f; Serial.print(F("kd=")); Serial.println(kd,3); return; }
+  if (sscanf(line,"mid %f",&f)==1){ MID_CM=f; Serial.print(F("mid=")); Serial.println(MID_CM,2); return; }
+  if (sscanf(line,"ema %f",&f)==1){ emaAlpha=f; Serial.print(F("ema=")); Serial.println(emaAlpha,2); return; }
+  if (sscanf(line,"center %d",&n)==1){ SERVO_CENTER=n; setServoAngle(SERVO_CENTER); Serial.print(F("center=")); Serial.println(SERVO_CENTER); return; }
+  if (sscanf(line,"min %d",&n)==1){ SERVO_MIN=n; Serial.print(F("min=")); Serial.println(SERVO_MIN); return; }
+  if (sscanf(line,"max %d",&n)==1){ SERVO_MAX=n; Serial.print(F("max=")); Serial.println(SERVO_MAX); return; }
+  if (sscanf(line,"form %d",&n)==1){ sensorFormula=n; Serial.print(F("form=")); Serial.println(sensorFormula); return; }
+
+  // Também aceita formato antigo: "P 9.0", "I 0.3", "D 3900"
+  char C; float v;
+  if (sscanf(line,"%c %f",&C,&v)==2) {
+    if (C=='P'||C=='p'){ kp=v; Serial.print(F("kp=")); Serial.println(kp,3); return; }
+    if (C=='I'||C=='i'){ ki=v; Serial.print(F("ki=")); Serial.println(ki,3); return; }
+    if (C=='D'||C=='d'){ kd=v; Serial.print(F("kd=")); Serial.println(kd,3); return; }
+  }
+
+  // No modo 3, teclas single-char de atalho
+  if (currentMode==M3_INTERATIVO && strlen(line)==1) {
+    handleKey_M3(line[0]);
+    return;
+  }
+
+  Serial.println(F("Comando nao reconhecido. (help)"));
+}
+
+// ==================== Sensor ====================
+float readDistanceRaw(int n) {
+  long sum=0;
+  if (n<1) n=1;
+  for (int i=0;i<n;i++) sum += analogRead(SENSOR_PIN);
+  return (float)sum/(float)n;
+}
+
+float adcToCm(float adc) {
+  float cm = 0;
+  if (sensorFormula==1) {
+    // Power-law genérico (ajuste comum pra Sharp)
+    cm = 17569.7 * pow(adc, -1.2062);
+  } else if (sensorFormula==2) {
+    // Tua fórmula usada (GP2Y0A21)
+    cm = 6787.0f / (adc - 3.0f) - 4.0f;
+  } else {
+    // Linear tosca (fallback)
+    cm = map((int)adc, 1023, 100, 10, 80); // só pra não quebrar
+  }
+  if (cm < 0 || cm > 100) return NO_BALL_CM;
+  return cm;
+}
+
+float readDistanceCm(int n) {
+  float adc = readDistanceRaw(n);
+  float cm  = adcToCm(adc);
+  // EMA
+  if (isnan(distEma)) distEma = cm;
+  distEma = emaAlpha*cm + (1.0f-emaAlpha)*distEma;
+  return distEma;
+}
+
+// ==================== Aux ====================
+void setServoAngle(int ang) {
+  ang = constrain(ang, SERVO_MIN, SERVO_MAX);
+  myservo.write(ang);
+}
+
+void buzzerPattern(uint8_t pattern) {
+  switch(pattern) {
+    case 1: noTone(BUZZER_PIN); break;
+    case 2: tone(BUZZER_PIN, 1500, 100); break;
+    case 3: tone(BUZZER_PIN, 1200, 400); break;
+    case 4: tone(BUZZER_PIN, 1400, 120); delay(150); tone(BUZZER_PIN, 1400, 120); break;
+    case 5: for (int i=0;i<8;i++){ tone(BUZZER_PIN, 1000+ (i%2)*500, 40); delay(50);} break;
+    case 6: tone(BUZZER_PIN, 900, 800); break;
+  }
+}
+
+// ==================== Modos ====================
+
+// Modo 1 – Leitura do sensor
+void mode1_tick() {
+  static unsigned long t0=0;
+  if (millis()-t0 < 100) return;
+  t0 = millis();
+
+  float adc = readDistanceRaw(50);
+  float cm  = readDistanceCm(1); // já filtrado pela EMA
+  Serial.print(F("ADC=")); Serial.print(adc,1);
+  Serial.print(F("\tDist(cm)=")); Serial.println(cm,2);
+}
+
+// Modo 2 – Servo sweep + calibração
+void mode2_tick() {
+  static int ang = SERVO_MIN;
+  static int dir = +1;
+  static unsigned long t0=0;
+  if (millis()-t0 < 20) return;
+  t0 = millis();
+
+  setServoAngle(ang);
+  ang += dir;
+  if (ang<=SERVO_MIN) dir=+1;
+  if (ang>=SERVO_MAX) dir=-1;
+
+  // Mostra distância junto
+  float cm = readDistanceCm(5);
+  Serial.print(F("ang=")); Serial.print(ang);
+  Serial.print(F("\tcm=")); Serial.println(cm,2);
+}
+
+// Modo 3 – Painel interativo
+void handleKey_M3(char c) {
+  switch(c) {
+    // Buzzer
+    case '1': buzzerPattern(1); Serial.println(F("Buzzer: silencio")); break;
+    case '2': buzzerPattern(2); Serial.println(F("Buzzer: bip curto")); break;
+    case '3': buzzerPattern(3); Serial.println(F("Buzzer: bip longo")); break;
+    case '4': buzzerPattern(4); Serial.println(F("Buzzer: bip duplo")); break;
+    case '5': buzzerPattern(5); Serial.println(F("Buzzer: tremolo")); break;
+    case '6': buzzerPattern(6); Serial.println(F("Buzzer: alerta")); break;
+
+    // Kp presets
+    case 'g': kp=0.5;  Serial.println(F("kp=0.5"));  break;
+    case 'h': kp=1.0;  Serial.println(F("kp=1.0"));  break;
+    case 'j': kp=2.0;  Serial.println(F("kp=2.0"));  break;
+    case 'k': kp=4.0;  Serial.println(F("kp=4.0"));  break;
+    case 'l': kp=8.0;  Serial.println(F("kp=8.0"));  break;
+
+    // Ki presets
+    case 'm': ki=0.00; Serial.println(F("ki=0.00")); break;
+    case 'n': ki=0.05; Serial.println(F("ki=0.05")); break;
+    case 'o': ki=0.10; Serial.println(F("ki=0.10")); break;
+    case 'p': ki=0.20; Serial.println(F("ki=0.20")); break;
+    case 'r': ki=0.30; Serial.println(F("ki=0.30")); break;
+
+    // Kd presets
+    case 'a': kd=100;  Serial.println(F("kd=100"));  break;
+    case 's': kd=500;  Serial.println(F("kd=500"));  break;
+    case 'd': kd=1000; Serial.println(F("kd=1000")); break;
+    case 'f': kd=2000; Serial.println(F("kd=2000")); break;
+    case 'e': kd=4000; Serial.println(F("kd=4000")); break;
+
+    // Teste de centro
+    case 'c': setServoAngle(SERVO_CENTER); digitalWrite(LED_PIN,HIGH); tone(BUZZER_PIN,1500,120); delay(150); digitalWrite(LED_PIN,LOW); break;
+
+    // Reimprime tabela
+    case 't': printHelp(); break;
+
+    default: Serial.println(F("(tecla do modo 3 nao mapeada)"));
+  }
+}
+
+void mode3_tick() {
+  static unsigned long t0=0;
+  if (millis()-t0 < 300) return;
+  t0 = millis();
+
+  float cm = readDistanceCm(10);
+  float err = MID_CM - min(cm, MAX_CONTROL_CM);
+  // Se estiver no centro ±0.5 cm, acende LED
+  if (fabs(err) <= 0.5) { digitalWrite(LED_PIN, HIGH); } else { digitalWrite(LED_PIN, LOW); }
+  Serial.print(F("cm=")); Serial.print(cm,2);
+  Serial.print(F("\tkp=")); Serial.print(kp,2);
+  Serial.print(F(" ki=")); Serial.print(ki,2);
+  Serial.print(F(" kd=")); Serial.println(kd,1);
+}
+
+// Modo 4 – Teste integrado (baseado no teu #1, não-bloqueante)
+void mode4_tick() {
+  static int brilho=0, dir=+5;
+  static unsigned long t0=0;
+  if (millis()-t0 < 30) return;
+  t0 = millis();
+
+  brilho += dir;
+  if (brilho>=255) { brilho=255; dir=-5; }
+  if (brilho<=0)   { brilho=0;   dir=+5; }
+
+  analogWrite(LED_PIN, brilho);
+  tone(BUZZER_PIN, 1000);
+
+  int ang = map(brilho, 0, 255, 60, 120);
+  setServoAngle(ang);
+
+  int sensorValue = (int)readDistanceRaw(5); // ADC cru pra plotter
+  Serial.print(F("LED:"));    Serial.print(brilho);
+  Serial.print(F("\tServo:")); Serial.print(ang);
+  Serial.print(F("\tSensor:")); Serial.println(sensorValue);
+}
+
+// Modo 5 – BALANÇA PID (teu #4 ajustado)
+void mode5_tick() {
+  const int period = 50; // ms
+  static unsigned long t0=0;
+  if (millis()-t0 < (unsigned long)period) return;
+
+  float dt = (millis()-t0)/1000.0f;
+  t0 = millis();
+
+  float distance = readDistanceCm(50);
+
+  // Modo "sem bola"
+  if (distance >= NO_BALL_CM) {
+    setServoAngle(SERVO_CENTER);
+    digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
+    Iacc = 0; lastErr = 0;
+    Serial.println(F("ESPERA: sem bola."));
+    return;
+  }
+
+  // Saturação útil
+  float dctrl = distance;
+  if (dctrl > MAX_CONTROL_CM) dctrl = MAX_CONTROL_CM;
+
+  // Erro
+  float err = MID_CM - dctrl;
+
+  // Deadband no centro
+  if (fabs(err) <= 0.3f) {
+    setServoAngle(SERVO_CENTER);
+    Iacc = 0; lastErr=0;
+    digitalWrite(LED_PIN, HIGH);
+    tone(BUZZER_PIN, 1500, 100);
+    Serial.println(F("Equilibrado (deadband)."));
+    return;
+  }
+
+  // PID
+  float P = kp * err;
+  float D = kd * ((err - lastErr) / max(dt, 1e-3f));
+
+  // Integral só perto do alvo
+  if (fabs(err) < 3.0f) {
+    Iacc += ki * err * dt;
+    if (Iacc > Imax) Iacc = Imax;
+    if (Iacc < Imin) Iacc = Imin;
+  } else {
+    Iacc = 0;
+  }
+
+  float u = P + Iacc + D;
+  if (invertOutput) u = -u;
+
+  // Aplica no servo ao redor do centro
+  static int lastAng = SERVO_CENTER;
+  int ang = SERVO_CENTER + (int)u;
+
+  // Slew-rate
+  if (useSlew) {
+    int delta = ang - lastAng;
+    if (delta >  maxDeltaDeg) ang = lastAng + (int)maxDeltaDeg;
+    if (delta < -maxDeltaDeg) ang = lastAng - (int)maxDeltaDeg;
+  }
+
+  setServoAngle(ang);
+  lastAng = ang;
+  lastErr = err;
+
+  // Indicadores (fora do centro)
+  digitalWrite(LED_PIN, LOW);
+  noTone(BUZZER_PIN);
+
+  // Debug
+  Serial.print(F("Dist: ")); Serial.print(distance,1);
+  Serial.print(F(" | Err: ")); Serial.print(err,2);
+  Serial.print(F(" | Ang: ")); Serial.print(ang);
+  Serial.print(F(" | Kp: ")); Serial.print(kp,2);
+  Serial.print(F(" | Ki: ")); Serial.print(ki,2);
+  Serial.print(F(" | Kd: ")); Serial.println(kd,1);
+}
