@@ -1,0 +1,88 @@
+/*
+ * ===========================================/ ZENIT - Modo de Teste (Sensor + Buzzer)
+ * Este código não move o servo.
+ * Serve apenas para testar se o buzzer e o LED acionam
+ * quando a bola está na posição correta.
+ */
+
+// Protótipo da função do sensor
+float get_dist_manual(int n);
+
+// === Conexões da placa ===
+const int SENSOR_PIN = A0;
+const int ledPin     = 6;
+const int buzzerPin  = 3;
+
+// === Parâmetros do Teste ===
+const float distance_setpoint = 15.5; // cm (Nosso alvo)
+const float ZONA_DE_EQUILIBRIO = 0.5; // Uma "folga" de 0.5cm para cada lado do alvo
+const float NO_BALL_CM = 40.0;        // Distância para considerar "sem bola"
+
+// === Controle de Tempo ===
+unsigned long time_prev;
+const int period = 100; // ms (Podemos deixar um pouco mais lento para o teste)
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("Modo de Teste - Sensor e Buzzer.");
+  Serial.print("Alvo: ");
+  Serial.print(distance_setpoint);
+  Serial.println(" cm");
+  
+  pinMode(SENSOR_PIN, INPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  
+  time_prev = millis();
+}
+
+void loop() {
+  // Executa a lógica a cada 'period' milissegundos
+  if (millis() - time_prev >= period) {
+    time_prev = millis();
+
+    // 1. Lê a distância do sensor
+    float distance = get_dist_manual(10); // Usamos menos leituras para um teste rápido
+
+    // Imprime a distância no monitor para você poder ver em tempo real
+    Serial.print("Distancia medida: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+
+    // 2. Calcula o erro (distância do alvo)
+    float distance_error = distance_setpoint - distance;
+
+    // 3. Verifica se a bola está na zona de equilíbrio
+    if (abs(distance_error) <= ZONA_DE_EQUILIBRIO) {
+      // Se estiver no centro, aciona os indicadores.
+      digitalWrite(ledPin, HIGH);
+      tone(buzzerPin, 1500, 100); 
+    } else {
+      // Se não estiver no centro, desliga os indicadores.
+      digitalWrite(ledPin, LOW);
+      noTone(buzzerPin);
+    }
+  }
+}
+
+// === Função do sensor (otimizada) ===
+float get_dist_manual(int num_leituras) {
+  long sum = 0;
+  if (num_leituras <= 1) {
+    sum = analogRead(SENSOR_PIN);
+  } else {
+    for (int i = 0; i < num_leituras; i++) {
+      sum += analogRead(SENSOR_PIN);
+    }
+  }
+  
+  float adc = (float)sum / (float)num_leituras;
+  
+  float distance_cm = 6787.0 / (adc - 3.0) - 4.0;
+  
+  if (distance_cm < 0 || distance_cm > 100) {
+    return NO_BALL_CM;
+  }
+  
+  return distance_cm;
+}
