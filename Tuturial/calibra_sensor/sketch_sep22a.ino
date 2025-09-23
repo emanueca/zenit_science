@@ -1,0 +1,406 @@
+/*
+ * ZENIT - Mostra IFfar 2k25
+ * Versão: Wizard de RAIO (inicia pedindo), Buzzer/LED, Calibração (M<cm>), L/Z/R, ajustes, PID com dt
+ * Comandos novos:
+ *   A<raio>  → define raio direto (ex.: A1.7)
+ *   B<diam>  → define raio por diâmetro (ex.: B3.4 → R=1.7)
+ *   W        → reabrir tutorial
+ *   X        → resetar raio e reabrir tutorial
+ */
+#include <Servo.h>
+#include <math.h>
+
+// ======================= PROTÓTIPOS =======================
+float get_dist(int n);
+void handleSerialInput();
+float readADCavg(int n);
+void printStartupWizard();
+void printCalibrationHelp();
+void setModoCalibracao(bool on);
+
+// ======================= HARDWARE =========================
+const int SENSOR_PIN = A0;
+const int SERVO_PIN  = 9;
+const int LED_OK_PIN = 6;   // LED indicador "centralizado"
+const int BUZZER_PIN = 3;   // Buzzer (ativo 5V por padrão)
+Servo myservo;
+
+// 1 = buzzer ATIVO 5V; 0 = buzzer PASSIVO (usa tone())
+#define BUZZER_IS_ACTIVE 1
+
+// ======================= SERVO ============================
+const int SERVO_CENTRO      = 72;
+const int SERVO_MIN_ANGULO  = 65;
+const int SERVO_MAX_ANGULO  = 100;
+
+// ======================= CONTROLE =========================
+const unsigned long PERIOD_MS = 50;     // 20 Hz
+unsigned long t_last = 0;
+
+// Direção do sistema (se empurrar pro lado errado, troque o sinal)
+const int DIRECAO = +1; // +1 = normal | -1 = invertido
+
+// Setpoint (cm)
+float distance_setpoint = 10.0f;
+
+// Filtro exponencial (EMA)
+const float ALFA = 0.20f;   // 0.15–0.30
+bool filtro_inicializado = false;
+
+// Distâncias
+float distance_raw  = 0.0f;
+float distance_filt = 0.0f;
+float distance_prev = 0.0f; // cm/s usa dist_prev
+
+// Zona "sem bola"
+float NO_BALL_CM = 19.5f;   // ajustável via N<cm>
+
+// ======================= PID (com dt) =====================
+float kp = 2.4f;
+float ki = 0.00f;
+float kd = 1.8f;
+float e_prev = 0.0f;
+float Iacc   = 0.0f;
+const float I_LIM = 30.0f;
+
+// ======================= CENTRALIZAÇÃO ====================
+float CENTER_BAND_CM    = 0.30f;
+float CENTER_VEL_CMS    = 0.60f;
+unsigned long CENTER_HOLD_MS = 300;
+unsigned long BEEP_MS         = 120;
+
+unsigned long center_since_ms = 0;
+bool is_centered = false;
+unsigned long beep_until_ms = 0;
+
+// ======================= CALIBRAÇÃO (M<cm>) ===============
+bool modo_calibracao = false;     // C1 liga, C0 desliga
+float R = NAN;                    // RAIO da bola (cm) — começa indefinido!
+bool  await_radius = true;        // enquanto true, exige A<raio> ou B<diam>
+
+// Buffer de pontos
+const int MAX_CAL = 64;
+float calCM[MAX_CAL];
+float calADC[MAX_CAL];
+int   calN = 0;
+
+// ======================= DEBUG ============================
+#define DEBUG 0
+
+// ======================= HELPERS BUZZER ===================
+void beepOn() {
+#if BUZZER_IS_ACTIVE
+  digitalWrite(BUZZER_PIN, HIGH);
+#else
+  tone(BUZZER_PIN, 2000);
+#endif
+}
+void beepOff() {
+#if BUZZER_IS_ACTIVE
+  digitalWrite(BUZZER_PIN, LOW);
+#else
+  noTone(BUZZER_PIN);
+#endif
+}
+static void beepShort(unsigned long ms=100) {
+  unsigned long now = millis();
+  beep_until_ms = now + ms;
+  beepOn();
+}
+
+// ======================= SETUP ============================
+void setup() {
+  Serial.begin(115200);
+
+  myservo.attach(SERVO_PIN);
+  myservo.write(SERVO_CENTRO);
+
+  pinMode(SENSOR_PIN, INPUT);
+  pinMode(LED_OK_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(LED_OK_PIN, LOW);
+  beepOff();
+
+  t_last = millis();
+  delay(300);
+
+  // Pré-semeia o filtro
+  distance_raw  = get_dist(50);
+  distance_filt = distance_raw;
+  distance_prev = distance_raw;
+  filtro_inicializado = true;
+
+  // Sempre abre com o tutorial inicial e exige raio
+  await_radius = true;
+  printStartupWizard();
+}
+
+// ======================= LOOP =============================
+void loop() {
+  handleSerialInput();
+
+  unsigned long now = millis();
+  if (beep_until_ms && now >= beep_until_ms) beepOff();
+
+  // Enquanto o raio não for definido, não roda controle nem calibração
+  if (await_radius) {
+    delay(10);
+    return;
+  }
+
+  // --------- MODO CALIBRAÇÃO ---------
+  if (modo_calibracao) {
+    // (se quiser) leitura ao vivo:
+    // float adc_live = readADCavg(20);
+    // Serial.print("ADC_live="); Serial.println(adc_live,1);
+    delay(10);
+    return; // não roda PID/saídas neste modo
+  }
+
+  // --------- CONTROLE A CADA 50 ms ---------
+  if (now - t_last >= PERIOD_MS) {
+    float dt = (now - t_last) / 1000.0f;
+    if (dt <= 0) dt = PERIOD_MS / 1000.0f;
+    t_last = now;
+
+    // 1) Leitura + filtro
+    distance_raw = get_dist(50);
+    if (!filtro_inicializado) { distance_filt = distance_raw; filtro_inicializado = true; }
+    else { distance_filt = ALFA * distance_raw + (1.0f - ALFA) * distance_filt; }
+    float distance = distance_filt;
+
+    float vel_cms = (distance - distance_prev) / dt;
+
+    // 2) "Sem bola"
+    if (distance >= NO_BALL_CM) {
+      myservo.write(SERVO_CENTRO);
+      digitalWrite(LED_OK_PIN, LOW);
+      beepOff();
+      Iacc = 0.0f; e_prev = 0.0f;
+      is_centered = false; center_since_ms = 0;
+#if DEBUG
+      Serial.println(F("MODO ESPERA - Sem bola detectada."));
+#endif
+      distance_prev = distance;
+      return;
+    }
+
+    // 3) Erro
+    float e_phys = distance_setpoint - distance;
+    float e = (float)DIRECAO * e_phys;
+
+    // 4) Centralização
+    bool in_band = (fabs(e_phys) <= CENTER_BAND_CM) && (fabs(vel_cms) <= CENTER_VEL_CMS);
+    if (in_band) { if (center_since_ms == 0) center_since_ms = now; }
+    else          { center_since_ms = 0; }
+    bool centered_now = in_band && center_since_ms && ((now - center_since_ms) >= CENTER_HOLD_MS);
+    if (centered_now && !is_centered) { digitalWrite(LED_OK_PIN, HIGH); beepShort(BEEP_MS); }
+    if (!centered_now && is_centered) { digitalWrite(LED_OK_PIN, LOW); }
+    is_centered = centered_now;
+
+    // 5) PID
+    float P = kp * e;
+    Iacc += ki * e * dt; if (Iacc > I_LIM) Iacc = I_LIM; if (Iacc < -I_LIM) Iacc = -I_LIM;
+    float D = kd * (e - e_prev) / dt;
+    float u = P + Iacc + D;
+
+    // 6) Saída
+    int angulo_final = (int)round(SERVO_CENTRO + u);
+    angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
+    myservo.write(angulo_final);
+
+    // 7) Estados
+    e_prev = e;
+    distance_prev = distance;
+
+#if DEBUG
+    Serial.print(F("Dist=")); Serial.print(distance, 2);
+    Serial.print(F(" | e="));  Serial.print(e_phys, 2);
+    Serial.print(F(" | vel="));Serial.print(vel_cms, 2);
+    Serial.print(F(" | ang="));Serial.print(angulo_final);
+    Serial.print(F(" | P="));  Serial.print(P,2);
+    Serial.print(F(" I="));    Serial.print(Iacc,2);
+    Serial.print(F(" D="));    Serial.println(D,2);
+#endif
+  }
+}
+
+// ======================= SERIAL CMDS ======================
+void handleSerialInput() {
+  if (!Serial.available()) return;
+
+  char c = Serial.read();
+  float v = Serial.parseFloat();
+
+  // -------- Wizard do RAIO (sempre permitido) --------
+  if (c == 'A' || c == 'a') {            // A<raio_cm>
+    if (v <= 0) { Serial.println(F("Raio invalido. Use A<raio_cm>, ex.: A1.7")); return; }
+    R = v; await_radius = false; beepShort(120);
+    Serial.print(F(">>> Raio (R) definido = ")); Serial.print(R,2); Serial.println(F(" cm"));
+    Serial.println(F("Dica: para calibrar, digite C1. Para reabrir tutorial, W."));
+    while (Serial.available()) (void)Serial.read();
+    return;
+  } else if (c == 'B' || c == 'b') {     // B<diametro_cm> → R = D/2
+    if (v <= 0) { Serial.println(F("Diametro invalido. Use B<diam_cm>, ex.: B3.4")); return; }
+    R = v / 2.0f; await_radius = false; beepShort(120);
+    Serial.print(F(">>> Diametro=")); Serial.print(v,2);
+    Serial.print(F(" cm → R=")); Serial.print(R,2); Serial.println(F(" cm"));
+    Serial.println(F("Dica: para calibrar, digite C1. Para reabrir tutorial, W."));
+    while (Serial.available()) (void)Serial.read();
+    return;
+  } else if (c == 'W' || c == 'w') {     // reabrir tutorial
+    printStartupWizard();
+    while (Serial.available()) (void)Serial.read();
+    return;
+  } else if (c == 'X' || c == 'x') {     // resetar raio e reabrir tutorial
+    R = NAN; await_radius = true;
+    printStartupWizard();
+    while (Serial.available()) (void)Serial.read();
+    return;
+  }
+
+  // Se ainda não definiu o raio, bloqueia demais comandos
+  if (await_radius) {
+    Serial.println(F("Defina o raio primeiro: A<raio_cm> (ex.: A1.7) ou B<diam_cm> (ex.: B3.4)."));
+    Serial.println(F("Ou envie W para reabrir o tutorial."));
+    while (Serial.available()) (void)Serial.read();
+    return;
+  }
+
+  // -------- PID / setpoint / ajustes / calibração / pontos --------
+  if (c == 'P' || c == 'p') {
+    kp = v; Serial.print(F(">>> Kp = ")); Serial.println(kp, 4);
+  } else if (c == 'I' || c == 'i') {
+    ki = v; Serial.print(F(">>> Ki = ")); Serial.println(ki, 4);
+  } else if (c == 'D' || c == 'd') {
+    kd = v; Serial.print(F(">>> Kd = ")); Serial.println(kd, 4);
+  } else if (c == 'S' || c == 's') {
+    distance_setpoint = v; Serial.print(F(">>> Setpoint (cm) = ")); Serial.println(distance_setpoint, 2);
+  } else if (c == 'U' || c == 'u') {
+    CENTER_BAND_CM = v; Serial.print(F(">>> Banda do centro = ")); Serial.print(CENTER_BAND_CM,2); Serial.println(F(" cm"));
+  } else if (c == 'V' || c == 'v') {
+    CENTER_VEL_CMS = v; Serial.print(F(">>> Velocidade máxima = ")); Serial.print(CENTER_VEL_CMS,2); Serial.println(F(" cm/s"));
+  } else if (c == 'H' || c == 'h') {
+    if (v < 0) v = 0; CENTER_HOLD_MS = (unsigned long)v; Serial.print(F(">>> Tempo mínimo centrado = ")); Serial.print(CENTER_HOLD_MS); Serial.println(F(" ms"));
+  } else if (c == 'K' || c == 'k') {
+    if (v < 0) v = 0; BEEP_MS = (unsigned long)v; Serial.print(F(">>> Duracao do bip = ")); Serial.print(BEEP_MS); Serial.println(F(" ms"));
+  } else if (c == 'N' || c == 'n') {
+    NO_BALL_CM = v; Serial.print(F(">>> Limite 'sem bola' = ")); Serial.print(NO_BALL_CM,2); Serial.println(F(" cm"));
+  }
+  else if (c == 'C' || c == 'c') { // C1 liga / C0 desliga
+    bool on = (v > 0.5f);
+    setModoCalibracao(on);
+  }
+  else if (c == 'M' || c == 'm') { // M<cm> captura um ponto
+    float Ccm = v;
+    if (calN < MAX_CAL) {
+      float adc = readADCavg(200);
+      calCM[calN]  = Ccm;
+      calADC[calN] = adc;
+
+      beepShort(100); // bip a cada ponto salvo
+
+      Serial.print("IDX="); Serial.print(calN);
+      Serial.print("  CM="); Serial.print(Ccm, 2);
+      Serial.print(", ADC="); Serial.println(adc, 1);
+
+      calN++;
+    } else {
+      Serial.println(F(">> Memoria de calibracao cheia. Use R para resetar."));
+    }
+  }
+  else if (c == 'Z' || c == 'z') { // desfaz último
+    if (calN > 0) { calN--; Serial.print(F(">> Desfeito: IDX=")); Serial.println(calN); }
+    else          { Serial.println(F(">> Nada para desfazer.")); }
+  }
+  else if (c == 'L' || c == 'l') { // listar
+    Serial.print(F(">> Pontos coletados: ")); Serial.println(calN);
+    for (int i = 0; i < calN; i++) {
+      Serial.print("IDX="); Serial.print(i);
+      Serial.print("  CM="); Serial.print(calCM[i], 2);
+      Serial.print(", ADC="); Serial.println(calADC[i], 1);
+    }
+  }
+  else if (c == 'R' || c == 'r') { // reset lista
+    calN = 0; Serial.println(F(">> Calibracao resetada (lista vazia)."));
+  }
+
+  while (Serial.available()) (void)Serial.read();
+}
+
+// ======================= WIZARDS/HELP =====================
+void printStartupWizard() {
+  Serial.println();
+  Serial.println(F("=== ZENIT PID — Bem-vindo! ==="));
+  Serial.println(F("Primeiro, informe o RAIO (R) da bola:"));
+  Serial.println(F("  • Se JA souber o raio:         A<raio_cm>    ex.:  A1.7"));
+  Serial.println(F("  • Se mediu o DIAMETRO (F-tras=0):  B<diam_cm> ex.:  B3.4  → (eu faco R=diam/2)"));
+  Serial.println(F("  • Se NAO souber: encoste a TRASEIRA na marca 0 e leia a FRENTE F;"));
+  Serial.println(F("    esse valor F e o diametro. Envie B<F>. Ex.: F=3.4 → B3.4 → R=1.7"));
+  Serial.println();
+  Serial.println(F("Depois de definir o raio:"));
+  Serial.println(F("  • Para CALIBRAR o sensor, digite C1 (calibracao ON)."));
+  Serial.println(F("    Vou explicar como achar o CENTRO (C) e salvar pontos com M<cm>."));
+  Serial.println();
+  Serial.println(F("Comandos uteis:"));
+  Serial.println(F("  W   → reabrir este tutorial"));
+  Serial.println(F("  X   → resetar o raio e reabrir o tutorial"));
+  Serial.println(F("  P/I/D  → ganhos PID   |  S<cm> → setpoint"));
+  Serial.println(F("================================"));
+}
+
+void printCalibrationHelp() {
+  Serial.println();
+  Serial.println(F("=== MODO CALIBRACAO ATIVADO ==="));
+  if (isnan(R)) Serial.println(F("Raio (R): NAO definido! (use A<raio> ou B<diam>)"));
+  else { Serial.print(F("Raio (R): ")); Serial.print(R,2); Serial.println(F(" cm")); }
+  Serial.println(F("Queremos registrar o CENTRO (C) da bola (comando M<cm>)."));
+  Serial.println(F("Como achar C (duas formulas simples):"));
+  Serial.println(F("  • Pela FRENTE (F) da bola (lado do sensor):   C = F − R"));
+  Serial.println(F("  • Pela TRASEIRA (T) (lado oposto):            C = T + R"));
+  Serial.println(F("Ex.: T=0 e F=3.4, R=1.7 → C=1.7 → mande: M1.7"));
+  Serial.println(F("Ex.: quer C=11.0 e R=1.7 → alinhe F=C+R=12.7 → mande: M11.0"));
+  Serial.println();
+  Serial.println(F("COMANDOS NESTE MODO:"));
+  Serial.println(F("  M<cm>  → captura 1 ponto (CENTRO). Faz um BEEP ao salvar."));
+  Serial.println(F("  L      → lista pontos (IDX, CM, ADC)"));
+  Serial.println(F("  Z      → desfaz o ultimo ponto"));
+  Serial.println(F("  R      → resetar lista"));
+  Serial.println(F("  C0     → sair da calibracao"));
+  Serial.println();
+  Serial.println(F("Dicas: iluminacao constante; ~9 pontos entre C≈R e C≈(comprimento−R)."));
+  Serial.println();
+}
+
+void setModoCalibracao(bool on) {
+  modo_calibracao = on;
+  if (on) {
+    myservo.write(SERVO_CENTRO);
+    myservo.detach(); // se o servo "amolecer", comente esta linha
+    printCalibrationHelp();
+  } else {
+    myservo.attach(SERVO_PIN);
+    myservo.write(SERVO_CENTRO);
+    Serial.println(F(">> Calibracao DESLIGADA. Controle PID retomado."));
+  }
+}
+
+// ======================= SENSOR IR ========================
+float get_dist(int n) {
+  long sum = 0;
+  for (int i = 0; i < n; i++) sum += analogRead(SENSOR_PIN);
+  float adc = (float)sum / (float)n;
+
+  if (adc < 1.0f) return 100.0f;
+
+  // Curva empírica provisória — depois substitua por adc_to_cm() calibrado
+  float distance_cm = 17569.7f * pow(adc, -1.2062f);
+  return distance_cm;
+}
+
+// ======================= UTIL =============================
+float readADCavg(int n) {
+  long s = 0;
+  for (int i = 0; i < n; i++) { s += analogRead(SENSOR_PIN); delay(2); }
+  return (float)s / (float)n;
+}
