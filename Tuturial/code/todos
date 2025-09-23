@@ -1,4 +1,4 @@
- /*
+/*
  * ZENIT – MultiTest + PID Balance (Menu 1..5)
  *
  * Mapeamento de modos:
@@ -64,6 +64,11 @@ float lastErr = 0.0f;
 unsigned long lastPIDms = 0;
 bool invertOutput = false;
 
+// PID runtime configuration / presets
+int pidPeriodMs = 50; // período de amostragem do PID (ms)
+float maxDeltaDeg = 2.0f; // slew-rate default (graus por passo PID)
+
+
 // Anti-windup
 float Imin = -400.0f, Imax = 400.0f;
 
@@ -73,7 +78,6 @@ const float NO_BALL_CM     = 40.0f; // sem bola
 
 // Slew-rate para suavizar servo (graus por passo PID)
 bool useSlew = true;
-float maxDeltaDeg = 2.0f;
 
 // ==== Estado geral ====
 enum Mode { MENU=0, M1_SENSOR, M2_SERVO, M3_INTERATIVO, M4_INTEGRADO, M5_BALANCA };
@@ -83,6 +87,7 @@ Mode currentMode = MENU;
 void printMenu();
 void printHelp();
 void printParams();
+void printShortcutsMenu();
 void handleSerialLine(char *line);
 void handleKey_M3(char c);
 float readDistanceRaw(int n);
@@ -145,7 +150,7 @@ void printMenu() {
   Serial.println(F("2) Servo sweep + calibracao"));
   Serial.println(F("3) Painel interativo (buzzer + Kp/Ki/Kd)"));
   Serial.println(F("4) Teste integrado (LED/Buzzer/Servo/Sensor)"));
-  Serial.println(F("5) BALANCA PID"));
+  Serial.println(F("5) BALANCA PID (cinética) - presets: normal, rapido, lento"));
   Serial.println(F("----------------"));
   Serial.println(F("help -> ajuda | p -> parametros"));
 }
@@ -177,7 +182,29 @@ void printParams() {
   Serial.print(F(" ki=")); Serial.print(ki, 3);
   Serial.print(F(" kd=")); Serial.println(kd, 3);
   Serial.print(F("Invert=")); Serial.println(invertOutput ? F("ON") : F("OFF"));
+  Serial.print(F(" pidPeriodMs=")); Serial.print(pidPeriodMs);
+  Serial.print(F(" maxDeltaDeg=")); Serial.println(maxDeltaDeg,2);
   Serial.println(F("==============="));
+}
+
+// Menu fixo de atalhos com valores atuais (mostrado ao entrar em qualquer modo)
+void printShortcutsMenu() {
+  Serial.println(F("\n--- Atalhos Rápidos (valor atual) ---"));
+  Serial.print(F("kp ")); Serial.print(kp,2); Serial.print(F("   | "));
+  Serial.print(F("ki ")); Serial.print(ki,3); Serial.print(F("   | "));
+  Serial.print(F("kd ")); Serial.println(kd,1);
+
+  Serial.print(F("mid ")); Serial.print(MID_CM,2); Serial.print(F("cm   | "));
+  Serial.print(F("ema ")); Serial.print(emaAlpha,2); Serial.println(F(" (0..1)"));
+
+  Serial.print(F("center ")); Serial.print(SERVO_CENTER); Serial.print(F("   | "));
+  Serial.print(F("min ")); Serial.print(SERVO_MIN); Serial.print(F("   | "));
+  Serial.print(F("max ")); Serial.println(SERVO_MAX);
+
+  Serial.print(F("preset normal|rapido|lento   | pidPeriodMs=")); Serial.print(pidPeriodMs);
+  Serial.print(F(" maxDeltaDeg=")); Serial.println(maxDeltaDeg,2);
+
+  Serial.println(F("------------------------------------\n"));
 }
 
 void handleSerialLine(char *line) {
@@ -186,6 +213,11 @@ void handleSerialLine(char *line) {
     currentMode = (Mode)(line[0]-'0');
     if (currentMode == MENU) currentMode = M1_SENSOR;
     Serial.print(F(">> Modo ")); Serial.println((int)currentMode);
+  // Mensagem padrão ao entrar em qualquer modo
+  Serial.println(F("Para sair e voltar ao menu, aperte 'q'."));
+  // Menu fixo de atalhos com os valores ao lado
+  printShortcutsMenu();
+
     if (currentMode == M3_INTERATIVO) {
       Serial.println(F("\n=== Modo 3 – Painel Interativo ==="));
       printHelp();
@@ -217,6 +249,10 @@ void handleSerialLine(char *line) {
   if (sscanf(line,"min %d",&n)==1){ SERVO_MIN=n; Serial.print(F("min=")); Serial.println(SERVO_MIN); return; }
   if (sscanf(line,"max %d",&n)==1){ SERVO_MAX=n; Serial.print(F("max=")); Serial.println(SERVO_MAX); return; }
   if (sscanf(line,"form %d",&n)==1){ sensorFormula=n; Serial.print(F("form=")); Serial.println(sensorFormula); return; }
+  // Preset de comportamento da balança (cinética)
+  if (sscanf(line,"preset %s", line)==1) {
+    // não usamos aqui; fallback abaixo com strcmp simples
+  }
 
   // Também aceita formato antigo: "P 9.0", "I 0.3", "D 3900"
   char C; float v;
@@ -230,6 +266,22 @@ void handleSerialLine(char *line) {
   if (currentMode==M3_INTERATIVO && strlen(line)==1) {
     handleKey_M3(line[0]);
     return;
+  }
+  // Comando preset (ex: preset normal|rapido|lento)
+  if (strncmp(line, "preset ", 7) == 0) {
+    const char *arg = line + 7;
+    if (!strcmp(arg, "normal")) {
+      kp = 9.0f; ki = 0.30f; kd = 3900.0f; pidPeriodMs = 50; maxDeltaDeg = 2.0f;
+      Serial.println(F("Preset: NORMAL aplicado.")); printParams(); return;
+    } else if (!strcmp(arg, "rapido")) {
+      kp = 12.0f; ki = 0.50f; kd = 5000.0f; pidPeriodMs = 30; maxDeltaDeg = 4.0f;
+      Serial.println(F("Preset: RAPIDO aplicado.")); printParams(); return;
+    } else if (!strcmp(arg, "lento")) {
+      kp = 6.0f; ki = 0.12f; kd = 2000.0f; pidPeriodMs = 80; maxDeltaDeg = 1.0f;
+      Serial.println(F("Preset: LENTO aplicado.")); printParams(); return;
+    } else {
+      Serial.println(F("Preset desconhecido. Use: normal, rapido ou lento.")); return;
+    }
   }
 
   Serial.println(F("Comando nao reconhecido. (help)"));
@@ -400,12 +452,15 @@ void mode4_tick() {
 
 // Modo 5 – BALANÇA PID (teu #4 ajustado)
 void mode5_tick() {
-  const int period = 50; // ms
-  static unsigned long t0=0;
-  if (millis()-t0 < (unsigned long)period) return;
+  static unsigned long t0 = 0;
+  unsigned long now = millis();
+  if (now - t0 < (unsigned long)pidPeriodMs) return;
+  float dt = (now - t0) / 1000.0f;
+  t0 = now;
 
-  float dt = (millis()-t0)/1000.0f;
-  t0 = millis();
+  // proteções básicas
+  if (dt <= 0.0f) dt = 1e-3f;
+  if (dt > 1.0f) dt = 1.0f; // evita saltos grandes
 
   float distance = readDistanceCm(50);
 
@@ -436,46 +491,53 @@ void mode5_tick() {
     return;
   }
 
+
   // PID
   float P = kp * err;
-  float D = kd * ((err - lastErr) / max(dt, 1e-3f));
+  float D = kd * ((err - lastErr) / dt);
 
   // Integral só perto do alvo
   if (fabs(err) < 3.0f) {
     Iacc += ki * err * dt;
+    // anti-windup: clamp
     if (Iacc > Imax) Iacc = Imax;
     if (Iacc < Imin) Iacc = Imin;
   } else {
-    Iacc = 0;
+    // quando longe do alvo, diminui integral suavemente
+    Iacc *= 0.9f;
   }
 
   float u = P + Iacc + D;
   if (invertOutput) u = -u;
 
-  // Aplica no servo ao redor do centro
+  // limitar o controle para evitar intruções extremas ao servo
+  const float Umax = 40.0f; // graus máxima contribuição do PID
+  if (u > Umax) u = Umax;
+  if (u < -Umax) u = -Umax;
+
+  // Aplica no servo ao redor do centro com slew-rate
   static int lastAng = SERVO_CENTER;
-  int ang = SERVO_CENTER + (int)u;
-
-  // Slew-rate
+  int targetAng = SERVO_CENTER + (int)round(u);
   if (useSlew) {
-    int delta = ang - lastAng;
-    if (delta >  maxDeltaDeg) ang = lastAng + (int)maxDeltaDeg;
-    if (delta < -maxDeltaDeg) ang = lastAng - (int)maxDeltaDeg;
+    int delta = targetAng - lastAng;
+    int maxStep = (int)round(maxDeltaDeg);
+    if (delta > maxStep) targetAng = lastAng + maxStep;
+    if (delta < -maxStep) targetAng = lastAng - maxStep;
   }
-
-  setServoAngle(ang);
-  lastAng = ang;
+  setServoAngle(targetAng);
+  lastAng = targetAng;
   lastErr = err;
 
   // Indicadores (fora do centro)
   digitalWrite(LED_PIN, LOW);
   noTone(BUZZER_PIN);
 
-  // Debug
-  Serial.print(F("Dist: ")); Serial.print(distance,1);
-  Serial.print(F(" | Err: ")); Serial.print(err,2);
-  Serial.print(F(" | Ang: ")); Serial.print(ang);
-  Serial.print(F(" | Kp: ")); Serial.print(kp,2);
-  Serial.print(F(" | Ki: ")); Serial.print(ki,2);
-  Serial.print(F(" | Kd: ")); Serial.println(kd,1);
+  // Debug compacto
+  Serial.print(F("[Balanca] Dist=")); Serial.print(distance,1);
+  Serial.print(F("cm Err=")); Serial.print(err,2);
+  Serial.print(F(" U=")); Serial.print(u,2);
+  Serial.print(F(" Ang=")); Serial.print(targetAng);
+  Serial.print(F(" kp=")); Serial.print(kp,2);
+  Serial.print(F(" ki=")); Serial.print(ki,3);
+  Serial.print(F(" kd=")); Serial.println(kd,1);
 }
