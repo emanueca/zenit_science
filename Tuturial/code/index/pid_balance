@@ -1,0 +1,186 @@
+/*
+ * ===========================================/ ZENIT - Mostra IFfar 2k25
+ * VERSÃO INTERATIVA COM PAINEL DE CONTROLE
+ */
+#include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// --- NOVO: CONFIGURAÇÃO DO DISPLAY LCD ---
+// Endereço I2C do seu display (geralmente 0x27 ou 0x3F)
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+// Protótipos
+float get_dist_manual(int n);
+void handleControlPanel();
+void updateDisplay();
+
+// === Conexões da placa ===
+const int SENSOR_PIN = A0;
+const int ledPin     = 6;
+const int buzzerPin  = 3;
+Servo myservo;
+
+// --- NOVO: PINOS DO PAINEL DE CONTROLE ---
+const int KP_POT_PIN = A1;
+const int KI_POT_PIN = A2;
+const int KD_POT_PIN = A3;
+const int RESET_BTN_PIN = 2;
+
+// === Servo ===
+const int SERVO_CENTRO     = 72;
+const int SERVO_MIN_ANGULO = 50;
+const int SERVO_MAX_ANGULO = 95;
+
+// === Controle ===
+float distance = 0.0;
+unsigned long time_prev;
+float distance_previous_error = 0.0, distance_error = 0.0;
+const int period = 25;
+float toleranciaCentro = 1.0; 
+
+// === PID ===
+float kp, ki, kd; // Agora são controlados pelos potenciômetros
+float distance_setpoint = 11.25;
+float PID_p, PID_i, PID_d;
+
+// === Limites ===
+const int MAX_CONTROL_CM = 20.0;
+const int NO_BALL_CM = 40.0;
+
+void setup() {
+  Serial.begin(9600); // Mantemos o serial para debug inicial
+  
+  // --- NOVO: INICIALIZAÇÃO DO PAINEL E DISPLAY ---
+  lcd.init();
+  lcd.backlight();
+  pinMode(RESET_BTN_PIN, INPUT_PULLUP); // Usa o resistor interno do Arduino
+  
+  lcd.setCursor(0,0);
+  lcd.print("Mostra IFfar 2k25");
+  lcd.setCursor(0,1);
+  lcd.print(" Equilibrio PID ");
+  
+  myservo.attach(9);
+  myservo.write(SERVO_CENTRO);
+  pinMode(SENSOR_PIN, INPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  time_prev = millis();
+  delay(2000); // Tempo para ler a mensagem inicial
+}
+
+void loop() {
+  // 1. Lê os comandos do painel de controle físico
+  handleControlPanel();
+
+  if (millis() - time_prev >= period) {
+    time_prev = millis();
+    distance = get_dist_manual(50);
+    
+    // 2. Atualiza o display com as informações em tempo real
+    updateDisplay();
+
+    if (distance >= NO_BALL_CM) {
+      myservo.write(SERVO_CENTRO);
+      digitalWrite(ledPin, LOW);
+      noTone(buzzerPin);
+      PID_i = 0;
+      distance_previous_error = 0;
+      return;
+    }
+
+    float distance_corrigida = distance;
+    if (distance_corrigida > MAX_CONTROL_CM) {
+      distance_corrigida = MAX_CONTROL_CM;
+    }
+
+    distance_error = distance_setpoint - distance_corrigida;
+
+    if (abs(distance_error) <= toleranciaCentro) { 
+      myservo.write(SERVO_CENTRO);
+      PID_i = 0;
+      distance_previous_error = 0;
+      digitalWrite(ledPin, HIGH);
+      tone(buzzerPin, 1500, 100); 
+      return;
+    }
+
+    PID_p = kp * distance_error;
+    PID_d = kd * ((distance_error - distance_previous_error) / dt);
+
+    if (abs(distance_error) < 3) {
+      PID_i = PID_i + (ki * distance_error * dt);
+    } else {
+      PID_i = 0;
+    }
+    
+    float correcao_pid = PID_p + PID_i + PID_d;
+    int angulo_final = SERVO_CENTRO + correcao_pid; 
+    
+    angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
+    myservo.write(angulo_final);
+    distance_previous_error = distance_error;
+
+    digitalWrite(ledPin, LOW);
+    noTone(buzzerPin);
+  }
+}
+
+// --- NOVA FUNÇÃO: LER OS POTENCIÔMETROS E BOTÃO ---
+void handleControlPanel() {
+  // Lê o valor de cada potenciômetro (0-1023)
+  int kp_raw = analogRead(KP_POT_PIN);
+  int ki_raw = analogRead(KI_POT_PIN);
+  int kd_raw = analogRead(KD_POT_PIN);
+
+  // Mapeia os valores para uma faixa útil para o PID
+  // Ajuste os valores máximos aqui conforme a necessidade da sintonia!
+  kp = map(kp_raw, 0, 1023, 0, 500) / 10.0;     // Kp de 0.0 a 50.0
+  ki = map(ki_raw, 0, 1023, 0, 100) / 10.0;     // Ki de 0.0 a 10.0
+  kd = map(kd_raw, 0, 1023, 0, 5000);           // Kd de 0 a 5000
+
+  // Verifica se o botão de reset foi pressionado
+  if (digitalRead(RESET_BTN_PIN) == LOW) {
+    // Reseta os ganhos para um valor seguro (pode ser o que você achou melhor)
+    kp = 10.0f;
+    ki = 0.0f;
+    kd = 0.0f;
+    lcd.setCursor(0,1);
+    lcd.print("Sintonia Reset!");
+    delay(500);
+  }
+}
+
+// --- NOVA FUNÇÃO: ATUALIZAR O DISPLAY LCD ---
+void updateDisplay() {
+  // Primeira linha: Kp e Ki
+  lcd.setCursor(0, 0);
+  lcd.print("P");
+  lcd.print(kp, 1); // Mostra com 1 casa decimal
+  lcd.print(" I");
+  lcd.print(ki, 1);
+  lcd.print("   "); // Limpa o resto da linha
+
+  // Segunda linha: Kd e Distância
+  lcd.setCursor(0, 1);
+  lcd.print("D");
+  lcd.print(kd, 0); // Mostra sem casas decimais
+  lcd.print(" Dst:");
+  lcd.print(distance, 1);
+  lcd.print("   "); // Limpa o resto da linha
+}
+
+// A função get_dist_manual() continua a mesma
+float get_dist_manual(int num_leituras) {
+  long sum = 0;
+  for (int i = 0; i < num_leituras; i++) {
+    sum += analogRead(SENSOR_PIN);
+  }
+  float adc = (float)sum / (float)num_leituras;
+  float distance_cm = 6787.0 / (adc - 3.0) - 4.0;
+  if (distance_cm < 0 || distance_cm > 100) {
+    return NO_BALL_CM;
+  }
+  return distance_cm;
+}
