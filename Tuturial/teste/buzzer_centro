@@ -15,7 +15,7 @@ const int buzzerPin  = 3;
 
 // === Parâmetros do Teste ===
 const float distance_setpoint = 15.5; // cm (Nosso alvo)
-const float ZONA_DE_EQUILIBRIO = 0.5; // Uma "folga" de 0.5cm para cada lado do alvo
+const float ZONA_DE_EQUILIBRIO = 2; // Uma "folga" de 0.5cm para cada lado do alvo
 const float NO_BALL_CM = 40.0;        // Distância para considerar "sem bola"
 
 // === Controle de Tempo ===
