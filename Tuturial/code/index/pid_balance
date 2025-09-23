@@ -1,186 +1,169 @@
 /*
- * ===========================================/ ZENIT - Mostra IFfar 2k25
- * VERSÃO INTERATIVA COM PAINEL DE CONTROLE
+ * ZENIT - Versão corrigida: anti-jitter, filtro, deadband e inicialização PID
  */
 #include <Servo.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 
-// --- NOVO: CONFIGURAÇÃO DO DISPLAY LCD ---
-// Endereço I2C do seu display (geralmente 0x27 ou 0x3F)
-LiquidCrystal_I2C lcd(0x27, 16, 2); 
-
-// Protótipos
-float get_dist_manual(int n);
-void handleControlPanel();
-void updateDisplay();
-
-// === Conexões da placa ===
+// hardware
 const int SENSOR_PIN = A0;
 const int ledPin     = 6;
 const int buzzerPin  = 3;
 Servo myservo;
 
-// --- NOVO: PINOS DO PAINEL DE CONTROLE ---
-const int KP_POT_PIN = A1;
-const int KI_POT_PIN = A2;
-const int KD_POT_PIN = A3;
-const int RESET_BTN_PIN = 2;
-
-// === Servo ===
+// servo / limites
 const int SERVO_CENTRO     = 72;
 const int SERVO_MIN_ANGULO = 50;
 const int SERVO_MAX_ANGULO = 95;
 
-// === Controle ===
-float distance = 0.0;
-unsigned long time_prev;
-float distance_previous_error = 0.0, distance_error = 0.0;
-const int period = 25;
-float toleranciaCentro = 1.0; 
+// controle tempo
+unsigned long time_prev = 0;
+const unsigned long PERIOD_MS = 40UL; // loop ~25Hz (mais estável)
+unsigned long lastBeep = 0;
 
-// === PID ===
-float kp, ki, kd; // Agora são controlados pelos potenciômetros
-float distance_setpoint = 11.25;
-float PID_p, PID_i, PID_d;
+// sensor / leitura
+const float NO_BALL_CM = 40.0f;
+const float MAX_CONTROL_CM = 20.0f;
+float distance_filtered = 0.0f;
+const float DIST_FILTER_ALPHA = 0.65f; // 0..1 (maior = mais suave)
 
-// === Limites ===
-const int MAX_CONTROL_CM = 20.0;
-const int NO_BALL_CM = 40.0;
+// PID (valores iniciais mais conservadores)
+float kp = 3.0f;
+float ki = 0.02f;
+float kd = 1.2f;
+float PID_p = 0.0f, PID_i = 0.0f, PID_d = 0.0f;
+const float INTEGRAL_MAX = 100.0f;
+
+// estados PID
+float distance_previous_error = 0.0f;
+float last_derivative = 0.0f;
+const float D_FILTER_ALPHA = 0.75f;
+
+// tolerâncias / deadband
+const float distance_setpoint = 11.35f;
+const float toleranciaCentro = 0.8f;       // zona ampla que considera "centro"
+const float CENTER_DEADBAND = 0.45f;      // se |erro| <= deadband -> vai pro centro
+const float CENTER_DISTANCE_TOL = 0.20f;  // bip apenas se muito preciso
+const unsigned long BEEP_INTERVAL_MS = 500UL;
+
+// servo hysteresis
+const int ANGLE_HYSTERESIS = 1; // só escreve se mudança >= 1 grau
+int lastCommandedAngle = SERVO_CENTRO;
 
 void setup() {
-  Serial.begin(9600); // Mantemos o serial para debug inicial
-  
-  // --- NOVO: INICIALIZAÇÃO DO PAINEL E DISPLAY ---
-  lcd.init();
-  lcd.backlight();
-  pinMode(RESET_BTN_PIN, INPUT_PULLUP); // Usa o resistor interno do Arduino
-  
-  lcd.setCursor(0,0);
-  lcd.print("Mostra IFfar 2k25");
-  lcd.setCursor(0,1);
-  lcd.print(" Equilibrio PID ");
-  
+  Serial.begin(115200);
   myservo.attach(9);
   myservo.write(SERVO_CENTRO);
-  pinMode(SENSOR_PIN, INPUT);
   pinMode(ledPin, OUTPUT);
   pinMode(buzzerPin, OUTPUT);
+  // inicializa filtros com a primeira leitura
+  distance_filtered = read_distance_raw(10);
+  PID_i = 0.0f; // inicializa integral
+  distance_previous_error = 0.0f;
   time_prev = millis();
-  delay(2000); // Tempo para ler a mensagem inicial
+  Serial.println("ZENIT - PID estável iniciado");
 }
 
 void loop() {
-  // 1. Lê os comandos do painel de controle físico
-  handleControlPanel();
+  unsigned long now = millis();
+  if (now - time_prev < PERIOD_MS) return;
+  float dt = (now - time_prev) / 1000.0f;
+  if (dt <= 0) dt = 0.001f;
+  time_prev = now;
 
-  if (millis() - time_prev >= period) {
-    time_prev = millis();
-    distance = get_dist_manual(50);
-    
-    // 2. Atualiza o display com as informações em tempo real
-    updateDisplay();
-
-    if (distance >= NO_BALL_CM) {
-      myservo.write(SERVO_CENTRO);
-      digitalWrite(ledPin, LOW);
-      noTone(buzzerPin);
-      PID_i = 0;
-      distance_previous_error = 0;
-      return;
-    }
-
-    float distance_corrigida = distance;
-    if (distance_corrigida > MAX_CONTROL_CM) {
-      distance_corrigida = MAX_CONTROL_CM;
-    }
-
-    distance_error = distance_setpoint - distance_corrigida;
-
-    if (abs(distance_error) <= toleranciaCentro) { 
-      myservo.write(SERVO_CENTRO);
-      PID_i = 0;
-      distance_previous_error = 0;
-      digitalWrite(ledPin, HIGH);
-      tone(buzzerPin, 1500, 100); 
-      return;
-    }
-
-    PID_p = kp * distance_error;
-    PID_d = kd * ((distance_error - distance_previous_error) / dt);
-
-    if (abs(distance_error) < 3) {
-      PID_i = PID_i + (ki * distance_error * dt);
-    } else {
-      PID_i = 0;
-    }
-    
-    float correcao_pid = PID_p + PID_i + PID_d;
-    int angulo_final = SERVO_CENTRO + correcao_pid; 
-    
-    angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
-    myservo.write(angulo_final);
-    distance_previous_error = distance_error;
-
+  // leitura
+  float d_raw = read_distance_raw(10);
+  if (d_raw >= NO_BALL_CM) {
+    // sem bola: centro e reset
+    writeServoIfNeeded(SERVO_CENTRO);
     digitalWrite(ledPin, LOW);
     noTone(buzzerPin);
+    PID_i = 0.0f;
+    distance_previous_error = 0.0f;
+    Serial.println("SEM BOLA -> CENTRO");
+    return;
+  }
+
+  // clamp
+  if (d_raw > MAX_CONTROL_CM) d_raw = MAX_CONTROL_CM;
+
+  // filtro exponencial
+  distance_filtered = DIST_FILTER_ALPHA * distance_filtered + (1.0f - DIST_FILTER_ALPHA) * d_raw;
+
+  // erro (setpoint - leitura)
+  float error = distance_setpoint - distance_filtered;
+
+  // deadband: se muito próximo do centro -> vai pro centro e zera integral
+  if (fabs(error) <= CENTER_DEADBAND) {
+    writeServoIfNeeded(SERVO_CENTRO);
+    PID_i = 0.0f;
+    distance_previous_error = 0.0f;
+    digitalWrite(ledPin, HIGH);
+
+    // beep apenas quando está realmente estável (pequena margem)
+    static int stableCount = 0;
+    if (fabs(distance_filtered - distance_setpoint) <= CENTER_DISTANCE_TOL) stableCount++; else stableCount = 0;
+    if (stableCount >= 3 && (now - lastBeep) >= BEEP_INTERVAL_MS) {
+      tone(buzzerPin, 1500, 80);
+      lastBeep = now;
+    }
+    Serial.print("Estavel centro. Dist: "); Serial.println(distance_filtered, 3);
+    return;
+  } else {
+    digitalWrite(ledPin, LOW);
+  }
+
+  // --- PID ---
+  PID_p = kp * error;
+
+  // integral com anti-windup
+  PID_i += ki * error * dt;
+  if (PID_i > INTEGRAL_MAX) PID_i = INTEGRAL_MAX;
+  if (PID_i < -INTEGRAL_MAX) PID_i = -INTEGRAL_MAX;
+
+  // derivativo e filtragem do D
+  float raw_d = (error - distance_previous_error) / dt;
+  float d_filtered = D_FILTER_ALPHA * last_derivative + (1.0f - D_FILTER_ALPHA) * raw_d;
+  last_derivative = d_filtered;
+  PID_d = kd * d_filtered;
+
+  float pid_output = PID_p + PID_i + PID_d; // unidades aproximadas em graus
+
+  // converte para ângulo
+  int angulo_final = SERVO_CENTRO + (int)round(pid_output);
+
+  // garante limites
+  angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
+
+  // só escreve se mudança significativa (histerese)
+  writeServoIfNeeded(angulo_final);
+
+  // debug
+  Serial.print("Dist(f):"); Serial.print(distance_filtered,3);
+  Serial.print(" Err:"); Serial.print(error,3);
+  Serial.print(" P:"); Serial.print(PID_p,3);
+  Serial.print(" I:"); Serial.print(PID_i,3);
+  Serial.print(" D:"); Serial.print(PID_d,3);
+  Serial.print(" Ang:"); Serial.println(lastCommandedAngle);
+
+  distance_previous_error = error;
+}
+
+// escreve no servo apenas quando necessário
+void writeServoIfNeeded(int ang) {
+  if (abs(ang - lastCommandedAngle) >= ANGLE_HYSTERESIS) {
+    myservo.write(ang);
+    lastCommandedAngle = ang;
   }
 }
 
-// --- NOVA FUNÇÃO: LER OS POTENCIÔMETROS E BOTÃO ---
-void handleControlPanel() {
-  // Lê o valor de cada potenciômetro (0-1023)
-  int kp_raw = analogRead(KP_POT_PIN);
-  int ki_raw = analogRead(KI_POT_PIN);
-  int kd_raw = analogRead(KD_POT_PIN);
-
-  // Mapeia os valores para uma faixa útil para o PID
-  // Ajuste os valores máximos aqui conforme a necessidade da sintonia!
-  kp = map(kp_raw, 0, 1023, 0, 500) / 10.0;     // Kp de 0.0 a 50.0
-  ki = map(ki_raw, 0, 1023, 0, 100) / 10.0;     // Ki de 0.0 a 10.0
-  kd = map(kd_raw, 0, 1023, 0, 5000);           // Kd de 0 a 5000
-
-  // Verifica se o botão de reset foi pressionado
-  if (digitalRead(RESET_BTN_PIN) == LOW) {
-    // Reseta os ganhos para um valor seguro (pode ser o que você achou melhor)
-    kp = 10.0f;
-    ki = 0.0f;
-    kd = 0.0f;
-    lcd.setCursor(0,1);
-    lcd.print("Sintonia Reset!");
-    delay(500);
-  }
-}
-
-// --- NOVA FUNÇÃO: ATUALIZAR O DISPLAY LCD ---
-void updateDisplay() {
-  // Primeira linha: Kp e Ki
-  lcd.setCursor(0, 0);
-  lcd.print("P");
-  lcd.print(kp, 1); // Mostra com 1 casa decimal
-  lcd.print(" I");
-  lcd.print(ki, 1);
-  lcd.print("   "); // Limpa o resto da linha
-
-  // Segunda linha: Kd e Distância
-  lcd.setCursor(0, 1);
-  lcd.print("D");
-  lcd.print(kd, 0); // Mostra sem casas decimais
-  lcd.print(" Dst:");
-  lcd.print(distance, 1);
-  lcd.print("   "); // Limpa o resto da linha
-}
-
-// A função get_dist_manual() continua a mesma
-float get_dist_manual(int num_leituras) {
+// leitura crua média
+float read_distance_raw(int n) {
   long sum = 0;
-  for (int i = 0; i < num_leituras; i++) {
+  for (int i = 0; i < n; i++) {
     sum += analogRead(SENSOR_PIN);
+    delay(2);
   }
-  float adc = (float)sum / (float)num_leituras;
+  float adc = (float)sum / (float)n;
   float distance_cm = 6787.0 / (adc - 3.0) - 4.0;
-  if (distance_cm < 0 || distance_cm > 100) {
-    return NO_BALL_CM;
-  }
+  if (distance_cm < 0.0f || distance_cm > 100.0f) return NO_BALL_CM;
   return distance_cm;
 }
