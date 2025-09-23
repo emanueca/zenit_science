@@ -1,7 +1,6 @@
 /*
  * ZENIT - Mostra IFfar 2k25
- * Versão: Wizard de RAIO (inicia pedindo), Buzzer/LED, Calibração (M<cm>), L/Z/R, ajustes, PID com dt
- * Comandos novos:
+ * Comandos:
  *   A<raio>  → define raio direto (ex.: A1.7)
  *   B<diam>  → define raio por diâmetro (ex.: B3.4 → R=1.7)
  *   W        → reabrir tutorial
