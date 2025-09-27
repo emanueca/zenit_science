@@ -3,18 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <title>ZENIT — PID Balance (Gangorra)</title>
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.5; margin: 0; padding: 0 1rem; background-color: #fdfdfd; color: #222; }
-    h1, h2, h3 { color: #134074; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background-color: #f4f4f4; }
-    code { font-family: Consolas, monospace; background-color: #f5f5f5; padding: 2px 4px; border-radius: 4px; }
-    pre { background-color: #f5f5f5; padding: 10px; border: 1px solid #ddd; overflow-x: auto; }
-    blockquote { margin: 1em 0; padding: 1em; background: #f9fafb; border-left: 4px solid #134074; font-style: italic; }
-    ul { margin: 0 0 1em 1.2em; }
-    li { margin-bottom: 0.3em; }
-  </style>
+  <!-- A estilização foi removida para compatibilidade com a visualização do GitHub. 
+       GitHub aplica seu próprio CSS, portanto é suficiente usar tags HTML básicas
+       como h1, h2, p, pre, code e tabelas para obter um resultado agradável. -->
 </head>
 <body>
 
@@ -170,6 +161,65 @@ float get_dist(int n)
   <li><strong>Marrom/Preto</strong> → GND (comum ao GND do Arduino)</li>
   <li><strong>Laranja/Branco</strong> (sinal) → D9</li>
 </ul>
+
+<!-- Seção de materiais recomendados e comparações -->
+<hr />
+
+<h2>13) Materiais recomendados e comparações</h2>
+
+<p>Durante o desenvolvimento do projeto, testamos diferentes variantes de hardware. A tabela a seguir resume opções de baixo custo, as peças que utilizamos e alternativas recomendadas para maior precisão ou robustez. Os valores são aproximados e servem apenas para comparação.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Componente</th>
+      <th>Básico (baixo custo)</th>
+      <th>Usado no protótipo</th>
+      <th>Recomendado (alto desempenho)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Sensor de distância</td>
+      <td>Sharp 2Y0A21 (10–80 cm) — ruído elevado e tendência a saturar</td>
+      <td>Sharp GP2Y0A21YK0F — nosso sensor, moderada precisão</td>
+      <td>Sensor <em>time‑of‑flight</em> (VL53L0X/VL53L1X) — melhor linearidade e menos ruído</td>
+    </tr>
+    <tr>
+      <td>Servo</td>
+      <td>Servo analógico padrão (Futaba S3003) — engrenagens plásticas</td>
+      <td>Servo digital MG995 — torque maior e resposta mais rápida</td>
+      <td>Servo digital de engrenagem metálica (MG996R ou DS3218) — torque e precisão elevados</td>
+    </tr>
+    <tr>
+      <td>Placa microcontrolador</td>
+      <td>UNO clone genérico — baixo custo, confiável</td>
+      <td>Arduino UNO original — usado no projeto, suporte oficial</td>
+      <td>Teensy 4.x / STM32 — processadores mais rápidos e mais portas</td>
+    </tr>
+    <tr>
+      <td>Fonte de alimentação</td>
+      <td>5 V / 1 A — suficiente apenas para servo leve</td>
+      <td>5 V / 2 A — utilizado no protótipo, alimenta servo padrão com folga</td>
+      <td>5 V–7 V / 3 A com regulador DC‑DC — para servos de torque elevado e múltiplos periféricos</td>
+    </tr>
+    <tr>
+      <td>Estrutura</td>
+      <td>MDF 3 mm cortado a laser — economia, mas menos durável</td>
+      <td>Impressão 3D PLA — nosso compromisso entre custo e personalização</td>
+      <td>Acrílico ou alumínio usinado — maior rigidez e estética profissional</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Escolher componentes mais avançados pode reduzir ruídos, aumentar a estabilidade do controle e simplificar a calibração. Entretanto, o custo sobe e a montagem pode exigir conhecimentos adicionais.</p>
+
+<!-- Seção de datasheets -->
+<hr />
+
+<h2>14) Datasheets</h2>
+
+<p>Os <em>datasheets</em> de todos os componentes utilizados (sensor de distância, servos, microcontroladores e outros periféricos) estão disponíveis na raiz do repositório em <code>zenit_science/datasheets</code>. Consulte esses documentos para detalhes técnicos, pinagens, curvas de resposta e limites de operação. Ter acesso aos datasheets facilita a compreensão do hardware e auxilia na resolução de problemas.</p>
 
 <p><strong>Crítico:</strong> GND deve ser comum entre a fonte dos servos e o Arduino. Sem isso, o servo poderá se comportar de forma errática ou nem se mover.</p>
 
