@@ -2,10 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <title>ZENIT — PID Balance (Gangorra)</title>
-  <!-- A estilização foi removida para compatibilidade com a visualização do GitHub. 
-       GitHub aplica seu próprio CSS, portanto é suficiente usar tags HTML básicas
-       como h1, h2, p, pre, code e tabelas para obter um resultado agradável. -->
+
 </head>
 <body>
 
