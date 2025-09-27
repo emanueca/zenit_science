@@ -2,7 +2,10 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-
+  <title>ZENIT — PID Balance (Gangorra)</title>
+  <!-- A estilização foi removida para compatibilidade com a visualização do GitHub. 
+       GitHub aplica seu próprio CSS, portanto é suficiente usar tags HTML básicas
+       como h1, h2, p, pre, code e tabelas para obter um resultado agradável. -->
 </head>
 <body>
 
@@ -139,6 +142,37 @@ float get_dist(int n)
 
 <p>As peças <em>impressas em 3D</em> correspondem ao que se vê no protótipo: suporte do servo, berço/pivô da barra, suporte do sensor, adaptador para horn e espaçadores. Todos os arquivos STL estão em <code>assets/files/3dFiles</code> do repositório.</p>
 
+<!-- Sub‑seção para comparações de peças usadas -->
+<h3>2.1) Peças usadas e comparações de hardware</h3>
+
+<p>Para orientar futuras montagens, a tabela abaixo resume três cenários: <strong>básico</strong>, <strong>usado no protótipo</strong> e <strong>recomendado</strong>. Assim fica fácil visualizar a evolução do projeto e escolher componentes conforme o seu orçamento e objetivo.</p>
+
+<table>
+  <thead>
+    <tr><th>Componente</th><th>Básico (baixo custo)</th><th>Usado no protótipo</th><th>Recomendado (melhorado)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Sensor de distância</strong></td><td>Sharp GP2Y0A21 (10–80 cm) — sujeito a ruídos e saturação</td><td>Sharp GP2Y0A21 (10–80 cm)</td><td>Sharp GP2Y0A02 (8–110 cm) ou sensor time‑of‑flight (VL53L0X/VL53L1X) — maior alcance e estabilidade</td></tr>
+    <tr><td><strong>Servo</strong></td><td>Servos de baixo custo (analógicos, engrenagens plásticas) — podem não aguentar acrílico ou torque; em alguns casos, substitua a base por isopor para reduzir o peso</td><td>Futaba S3003</td><td>Servos de maior torque com engrenagens metálicas (MG996R, DS3218) — melhor precisão</td></tr>
+    <tr><td><strong>Placa controladora</strong></td><td>Arduino UNO clone genérico</td><td>Arduino UNO original</td><td>ESP32 (ou ESP32‑S3) — mais RAM, Wi‑Fi/Bluetooth integrados e possibilidades de expansão</td></tr>
+    <tr><td><strong>Fonte de alimentação</strong></td><td>5 V / 1 A — suficiente para servos leves</td><td>5 V / 2 A — utilizada no protótipo, alimenta servo padrão com folga</td><td>5–7 V / ≥ 3 A com regulador DC‑DC — para servos de torque elevado e múltiplos periféricos</td></tr>
+    <tr><td><strong>Estrutura</strong></td><td>MDF fino ou <em>isopor</em> — menor custo, mas pode ser menos rígido e durável</td><td>Acrílico como base para a bola rolar e como suporte de todos os componentes do servo/motor (impressão 3D PLA para peças auxiliares)</td><td>Estruturas 3D impressas em PLA/ABS com reforços ou acrílico/alumínio usinado — maior rigidez e acabamento profissional</td></tr>
+  </tbody>
+</table>
+
+<p><em>Observações:</em> nas versões básicas, servos analógicos de baixo custo podem não ter torque suficiente e o acrílico pode trincar; considere usar isopor para reduzir o peso. O protótipo utilizou <strong>Futaba S3003</strong>, acrílico como base e PLA impresso em 3D para suportes. A versão recomendada sugere o <strong>ESP32</strong> por oferecer mais memória e conectividade (Wi‑Fi/Bluetooth), além de servos de maior torque e sensores Sharp de maior alcance.</p>
+
+<!-- Sub‑seção para datasheets -->
+<h3>2.2) Datasheets</h3>
+
+<p>Os manuais técnicos (<em>datasheets</em>) dos componentes estão disponíveis na pasta <code>zenit_science/datasheets</code> na raiz do repositório. Consulte esses documentos para detalhes de pinagem, curvas de resposta, limites de operação e características elétricas. Para referência rápida:</p>
+
+<ul>
+  <li><a href="https://www.kjell.com/globalassets/mediaassets/701905_87902_datasheet_en.pdf">Datasheet do servo Futaba S3003 (Luxorparts)</a> — especifica torque (3,2 kg·cm a 4,8 V; 4,1 kg·cm a 6 V), velocidade (0,19 s/60° a 6 V), corrente máxima (&lt; 1 A) e outras características【297381093160538†L16-L27】.</li>
+  <li><a href="https://www.olimex.com/Products/Components/Sensors/Distance/SNS-GP2Y0A21YK0F/resources/GP2Y0A21YK-DATA-SHEET.PDF">Datasheet do Sharp GP2Y0A21</a> — destaca a faixa de medição de 10 a 80 cm e a resposta típica de 39 ms【726251433760369†L4-L10】, bem como a corrente de operação típica de 30 mA【726251433760369†L122-L128】.</li>
+  <li><a href="https://global.sharp.com/products/device/lineup/data/pdf/datasheet/gp2y0a21yk_e.pdf">Datasheet oficial do Sharp GP2Y0A21YK</a> — abrangente (veja diretório de datasheets para download, pois o site pode estar instável).</li>
+  <li>Outros datasheets (MG996R, ESP32, etc.) também estão agrupados nessa pasta.</li>
+</ul>
 <hr />
 
 <h2>3) Ligações elétricas (UNO)</h2>
@@ -159,68 +193,6 @@ float get_dist(int n)
   <li><strong>Laranja/Branco</strong> (sinal) → D9</li>
 </ul>
 
-<!-- Seção de materiais recomendados e comparações -->
-<hr />
-
-<h2>13) Materiais recomendados e comparações</h2>
-
-<p>Durante o desenvolvimento do projeto, testamos diferentes variantes de hardware. A tabela a seguir resume opções de baixo custo, as peças que utilizamos e alternativas recomendadas para maior precisão ou robustez. Os valores são aproximados e servem apenas para comparação.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th>Componente</th>
-      <th>Básico (baixo custo)</th>
-      <th>Usado no protótipo</th>
-      <th>Recomendado (alto desempenho)</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Sensor de distância</td>
-      <td>Sharp 2Y0A21 (10–80 cm) — ruído elevado e tendência a saturar</td>
-      <td>Sharp GP2Y0A21YK0F — nosso sensor, moderada precisão</td>
-      <td>Sensor <em>time‑of‑flight</em> (VL53L0X/VL53L1X) — melhor linearidade e menos ruído</td>
-    </tr>
-    <tr>
-      <td>Servo</td>
-      <td>Servo analógico padrão (Futaba S3003) — engrenagens plásticas</td>
-      <td>Servo digital MG995 — torque maior e resposta mais rápida</td>
-      <td>Servo digital de engrenagem metálica (MG996R ou DS3218) — torque e precisão elevados</td>
-    </tr>
-    <tr>
-      <td>Placa microcontrolador</td>
-      <td>UNO clone genérico — baixo custo, confiável</td>
-      <td>Arduino UNO original — usado no projeto, suporte oficial</td>
-      <td>Teensy 4.x / STM32 — processadores mais rápidos e mais portas</td>
-    </tr>
-    <tr>
-      <td>Fonte de alimentação</td>
-      <td>5 V / 1 A — suficiente apenas para servo leve</td>
-      <td>5 V / 2 A — utilizado no protótipo, alimenta servo padrão com folga</td>
-      <td>5 V–7 V / 3 A com regulador DC‑DC — para servos de torque elevado e múltiplos periféricos</td>
-    </tr>
-    <tr>
-      <td>Estrutura</td>
-      <td>MDF 3 mm cortado a laser — economia, mas menos durável</td>
-      <td>Impressão 3D PLA — nosso compromisso entre custo e personalização</td>
-      <td>Acrílico ou alumínio usinado — maior rigidez e estética profissional</td>
-    </tr>
-  </tbody>
-</table>
-
-<p>Escolher componentes mais avançados pode reduzir ruídos, aumentar a estabilidade do controle e simplificar a calibração. Entretanto, o custo sobe e a montagem pode exigir conhecimentos adicionais.</p>
-
-<!-- Seção de datasheets -->
-<hr />
-
-<h2>14) Datasheets</h2>
-
-<p>Os <em>datasheets</em> de todos os componentes utilizados (sensor de distância, servos, microcontroladores e outros periféricos) estão disponíveis na raiz do repositório em <code>zenit_science/datasheets</code>. Consulte esses documentos para detalhes técnicos, pinagens, curvas de resposta e limites de operação. Ter acesso aos datasheets facilita a compreensão do hardware e auxilia na resolução de problemas.</p>
-
-<p><strong>Crítico:</strong> GND deve ser comum entre a fonte dos servos e o Arduino. Sem isso, o servo poderá se comportar de forma errática ou nem se mover.</p>
-
-<hr />
 
 <h2>4) Montagem mecânica (1D)</h2>
 
