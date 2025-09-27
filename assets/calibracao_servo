@@ -1,7 +1,0 @@
- *
- *  L-Tutorial
- *   L- obs: Recomenda-se usar este script de calibração ANTES de carregar o código principal de controle PID.
- *    L- obs, Seja cuidadoso e sincero ao definir os limites MÍNIMO e MÁXIMO. Um valor incorreto pode forçar o servo e causar danos permanentes ao seu dispositivo.
- *      L-Verefique se seu modelo de Servo-Motor está dísponivel aqui, ou ultilize os graus de seu motor
- *       L- Abra o Monitor Serial e aperte as seguintes teclas para obter os seguintes resultados!!
- *--+--
