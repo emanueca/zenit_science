@@ -1,65 +1,84 @@
-/*
- * ZENIT - Versão corrigida: anti-jitter, filtro, deadband e inicialização PID
+/*===========================================/
+ *                                            ZENIT - Mostra IFfar 2k25
+ *                                                                     /===========================================
+ * -------! Versão apresentação da Mostra com Buzzer, LED e sensor
+ * GitHub - Project = https://github.com/emanueca/zenit_science !-------
+ *
+ * Zenit Science - Ball Balancer PID
+ * Copyright (C) 2025 Emanuel e colaboradores
+ *
+ * Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo
+ * sob os termos da Licença Pública Geral GNU publicada pela Free Software Foundation,
+ * tanto a versão 3 da Licença, como (a seu critério) qualquer versão posterior.
+ *
+ * Este programa é distribuído SEM NENHUMA GARANTIA; sem mesmo a garantia implícita
+ * de COMERCIALIZAÇÃO ou de ADEQUAÇÃO A QUALQUER PROPÓSITO EM PARTICULAR.
+ * Consulte a Licença Pública Geral GNU para mais detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU
+ * junto com este programa. Se não, veja <https://www.gnu.org/licenses/>.
  */
+
 #include <Servo.h>
 
-// hardware
+// --- Configurações de Hardware ---
 const int SENSOR_PIN = A0;
-const int ledPin     = 6;
-const int buzzerPin  = 3;
+const int LED_PIN    = 6;
+const int BUZZER_PIN = 3;
 Servo myservo;
 
-// servo / limites
-const int SERVO_CENTRO     = 72;
-const int SERVO_MIN_ANGULO = 50;
-const int SERVO_MAX_ANGULO = 95;
+// --- Configurações do Servo Motor (ângulo) ---
+const int SERVO_CENTRO     = 75; 
+const int SERVO_MIN_ANGULO = 68; 
+const int SERVO_MAX_ANGULO = 101; 
 
-// controle tempo
+// --- Controle de Tempo ---
 unsigned long time_prev = 0;
-const unsigned long PERIOD_MS = 40UL; // loop ~25Hz (mais estável)
-unsigned long lastBeep = 0;
+const unsigned long PERIOD_MS = 40UL; // ~25Hz
 
-// sensor / leitura
-const float NO_BALL_CM = 40.0f;
-const float MAX_CONTROL_CM = 20.0f;
-float distance_filtered = 0.0f;
-const float DIST_FILTER_ALPHA = 0.65f; // 0..1 (maior = mais suave)
+// --- Configurações do Sensor ---
+const float NO_BALL_CM = 40.0f;        
+const float MIN_CONTROL_CM = 2.0f;     
+float distance_filtered = 0.0f;        
+const float DIST_FILTER_ALPHA = 0.65f; 
 
-// PID (valores iniciais mais conservadores)
-float kp = 3.0f;
-float ki = 0.02f;
-float kd = 1.2f;
+// --- Controle PID ---
+const float kp_near = 3.0f;   
+const float kp_far = 1.5f;    
+const float ERROR_THRESHOLD_CM = 2.0f; 
+float ki = 0.20f; 
+float kd = 8.0f;   
+ 
 float PID_p = 0.0f, PID_i = 0.0f, PID_d = 0.0f;
-const float INTEGRAL_MAX = 100.0f;
+const float INTEGRAL_MAX = 100.0f; 
 
-// estados PID
+// --- Estado do PID ---
 float distance_previous_error = 0.0f;
 float last_derivative = 0.0f;
-const float D_FILTER_ALPHA = 0.75f;
+const float D_FILTER_ALPHA = 0.95f; 
 
-// tolerâncias / deadband
-const float distance_setpoint = 11.35f;
-const float toleranciaCentro = 0.8f;       // zona ampla que considera "centro"
-const float CENTER_DEADBAND = 0.45f;      // se |erro| <= deadband -> vai pro centro
-const float CENTER_DISTANCE_TOL = 0.20f;  // bip apenas se muito preciso
-const unsigned long BEEP_INTERVAL_MS = 500UL;
+// --- Setpoint ---
+const float distance_setpoint = 11.35f;   
+const float CENTER_DEADBAND = 0.50f;      
+const float BEEP_FREQUENCY = 2700;        
 
-// servo hysteresis
-const int ANGLE_HYSTERESIS = 1; // só escreve se mudança >= 1 grau
+// --- Histerese do Servo Motor (ângulo) ---
+const int ANGLE_HYSTERESIS = 1; 
 int lastCommandedAngle = SERVO_CENTRO;
+
 
 void setup() {
   Serial.begin(115200);
   myservo.attach(9);
   myservo.write(SERVO_CENTRO);
-  pinMode(ledPin, OUTPUT);
-  pinMode(buzzerPin, OUTPUT);
-  // inicializa filtros com a primeira leitura
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
   distance_filtered = read_distance_raw(10);
-  PID_i = 0.0f; // inicializa integral
+  PID_i = 0.0f;
   distance_previous_error = 0.0f;
   time_prev = millis();
-  Serial.println("ZENIT - PID estável iniciado");
+  Serial.println("ZENIT - PID Corrigido Iniciado (Sintonia Refinada)");
 }
 
 void loop() {
@@ -69,85 +88,77 @@ void loop() {
   if (dt <= 0) dt = 0.001f;
   time_prev = now;
 
-  // leitura
   float d_raw = read_distance_raw(10);
+
   if (d_raw >= NO_BALL_CM) {
-    // sem bola: centro e reset
     writeServoIfNeeded(SERVO_CENTRO);
-    digitalWrite(ledPin, LOW);
-    noTone(buzzerPin);
+    digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
     PID_i = 0.0f;
     distance_previous_error = 0.0f;
     Serial.println("SEM BOLA -> CENTRO");
     return;
   }
+  
+  if (d_raw < MIN_CONTROL_CM) {
+    d_raw = MIN_CONTROL_CM;
+  }
 
-  // clamp
-  if (d_raw > MAX_CONTROL_CM) d_raw = MAX_CONTROL_CM;
-
-  // filtro exponencial
   distance_filtered = DIST_FILTER_ALPHA * distance_filtered + (1.0f - DIST_FILTER_ALPHA) * d_raw;
 
-  // erro (setpoint - leitura)
   float error = distance_setpoint - distance_filtered;
 
-  // deadband: se muito próximo do centro -> vai pro centro e zera integral
   if (fabs(error) <= CENTER_DEADBAND) {
     writeServoIfNeeded(SERVO_CENTRO);
     PID_i = 0.0f;
-    distance_previous_error = 0.0f;
-    digitalWrite(ledPin, HIGH);
-
-    // beep apenas quando está realmente estável (pequena margem)
-    static int stableCount = 0;
-    if (fabs(distance_filtered - distance_setpoint) <= CENTER_DISTANCE_TOL) stableCount++; else stableCount = 0;
-    if (stableCount >= 3 && (now - lastBeep) >= BEEP_INTERVAL_MS) {
-      tone(buzzerPin, 1500, 80);
-      lastBeep = now;
-    }
-    Serial.print("Estavel centro. Dist: "); Serial.println(distance_filtered, 3);
+    distance_previous_error = error;
+    digitalWrite(LED_PIN, HIGH);
+    tone(BUZZER_PIN, BEEP_FREQUENCY); 
+    
+    // Debug central
+    Serial.print("Servo Motor (Angulo):"); Serial.print(SERVO_CENTRO);
+    Serial.print("\tP (Sensor):"); Serial.print(distance_filtered, 3);
+    Serial.print("\tI:"); Serial.print(0);
+    Serial.print("\tD:"); Serial.print(0);
+    Serial.print("\tAngulo:"); Serial.println(SERVO_CENTRO);
     return;
   } else {
-    digitalWrite(ledPin, LOW);
+    digitalWrite(LED_PIN, LOW); 
+    noTone(BUZZER_PIN);
   }
 
-  // --- PID ---
-  PID_p = kp * error;
-
-  // integral com anti-windup
+  float current_kp;
+  if (fabs(error) > ERROR_THRESHOLD_CM) {
+    current_kp = kp_far; 
+  } else {
+    current_kp = kp_near; 
+  }
+  
+  PID_p = current_kp * error;
   PID_i += ki * error * dt;
-  if (PID_i > INTEGRAL_MAX) PID_i = INTEGRAL_MAX;
-  if (PID_i < -INTEGRAL_MAX) PID_i = -INTEGRAL_MAX;
+  PID_i = constrain(PID_i, -INTEGRAL_MAX, INTEGRAL_MAX);
 
-  // derivativo e filtragem do D
   float raw_d = (error - distance_previous_error) / dt;
   float d_filtered = D_FILTER_ALPHA * last_derivative + (1.0f - D_FILTER_ALPHA) * raw_d;
   last_derivative = d_filtered;
   PID_d = kd * d_filtered;
 
-  float pid_output = PID_p + PID_i + PID_d; // unidades aproximadas em graus
+  float pid_output = PID_p + PID_i + PID_d;
 
-  // converte para ângulo
   int angulo_final = SERVO_CENTRO + (int)round(pid_output);
-
-  // garante limites
   angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
-
-  // só escreve se mudança significativa (histerese)
   writeServoIfNeeded(angulo_final);
 
-  // debug
-  Serial.print("Dist(f):"); Serial.print(distance_filtered,3);
-  Serial.print(" Err:"); Serial.print(error,3);
-  Serial.print(" P:"); Serial.print(PID_p,3);
-  Serial.print(" I:"); Serial.print(PID_i,3);
-  Serial.print(" D:"); Serial.print(PID_d,3);
-  Serial.print(" Ang:"); Serial.println(lastCommandedAngle);
-
   distance_previous_error = error;
+  
+  // --- Debug via Serial (formatado para Plotter) ---
+  Serial.print("Servo Motor (Angulo):"); Serial.print(angulo_final);
+  Serial.print("\tP (Sensor):"); Serial.print(distance_filtered, 3);
+  Serial.print("\tI:"); Serial.print(PID_i, 3);
+  Serial.print("\tD:"); Serial.print(PID_d, 3);
+  Serial.print("\tAngulo:"); Serial.println(angulo_final);
 }
 
-// escreve no servo apenas quando necessário
 void writeServoIfNeeded(int ang) {
   if (abs(ang - lastCommandedAngle) >= ANGLE_HYSTERESIS) {
     myservo.write(ang);
@@ -155,7 +166,6 @@ void writeServoIfNeeded(int ang) {
   }
 }
 
-// leitura crua média
 float read_distance_raw(int n) {
   long sum = 0;
   for (int i = 0; i < n; i++) {
@@ -163,7 +173,10 @@ float read_distance_raw(int n) {
     delay(2);
   }
   float adc = (float)sum / (float)n;
-  float distance_cm = 6787.0 / (adc - 3.0) - 4.0;
-  if (distance_cm < 0.0f || distance_cm > 100.0f) return NO_BALL_CM;
+  float distance_cm = 6787.0 / (adc - 3.0) - 4.0; 
+  
+  if (distance_cm < 0.0f || distance_cm > 100.0f) {
+    return NO_BALL_CM;
+  }
   return distance_cm;
 }
