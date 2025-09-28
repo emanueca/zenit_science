@@ -1,293 +1,276 @@
-/*
- * ===========================================/ ZENIT - JOGO DE SINTONIA PID
+/*===========================================/
+ * ZENIT - Mostra IFfar 2k25
+ * /===========================================
+ * -------! Versão SIMPLIFICADA - PID Básico sem filtros e com Kp único.
  * GitHub - Project = https://github.com/emanueca/zenit_science !-------
+ *
+ * Zenit Science - Ball Balancer PID
+ * Copyright (C) 2025 Emanuel e colaboradores
+ *
+ * Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo
+ * sob os termos da Licença Pública Geral GNU publicada pela Free Software Foundation,
+ * tanto a versão 3 da Licença, como (a seu critério) qualquer versão posterior.
+ *
+ * Este programa é distribuído SEM NENHUMA GARANTIA; sem mesmo a garantia implícita
+ * de COMERCIALIZAÇÃO ou de ADEQUAÇÃO A QUALQUER PROPÓSITO EM PARTICULAR.
+ * Consulte a Licença Pública Geral GNU para mais detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU
+ * junto com este programa. Se não, veja <https://www.gnu.org/licenses/>.
  */
+
+*/
 #include <Servo.h>
 
-// Protótipos
-float get_dist_manual(int n);
-void handleSerialInput();
-void displayStatus();
-void runPIDLogic();
-void checkTimer();
-void doPointScoredBeep(); // <-- NOVO
-
-// ... (constantes de conexão, servo, etc. continuam as mesmas) ...
+// --- Configurações de Hardware ---
 const int SENSOR_PIN = A0;
-const int ledPin     = 6;
-const int buzzerPin  = 3;
+const int LED_PIN    = 6;
+const int BUZZER_PIN = 3;
 Servo myservo;
-const int SERVO_CENTRO     = 82;
-const int SERVO_MIN_ANGULO = 65;
-const int SERVO_MAX_ANGULO = 100;
-float distance = 0.0;
-unsigned long time_prev;
-float distance_previous_error = 0.0, distance_error = 0.0;
-const int period = 50;
 
-// === PID ===
-float kp_base = 9.0f;
-float ki_base = 0.3f;
-float kd_base = 3900.0f;
-float kp, ki, kd;
-float distance_setpoint = 15.5;
-float PID_p, PID_i, PID_d;
+// --- Configurações do Servo ---
+const int SERVO_CENTRO     = 72;
+const int SERVO_MIN_ANGULO = 60;
+const int SERVO_MAX_ANGULO = 99;
 
-// === Limites ===
-const float MAX_CONTROL_CM = 20.0;
-const float NO_BALL_CM = 40.0;
+// --- Controle de Tempo ---
+unsigned long time_prev = 0;
+const unsigned long PERIOD_MS = 40UL; // Período do loop em ms (~25Hz)
 
-// ==============================================
-// === LÓGICA DO JOGO ===
-// ==============================================
-enum GameState { ESPERA, RODADA_MINHA, CALIBRACAO, RODADA_JOGADOR, FIM_DE_JOGO };
-GameState currentState = ESPERA;
+// --- Configurações do Sensor ---
+const float NO_BALL_CM = 40.0f;
+const float MIN_CONTROL_CM = 2.0f;
 
-unsigned int meuPlacar = 0;
-unsigned int placarJogador = 0;
-unsigned long timerInicio;
+// --- Controle PID SIMPLIFICADO ---
+float kp = 3.0f;  // Kp único e simplificado
+float ki = 0.20f;
+float kd = 8.0f;
 
-const unsigned long DURACAO_RODADA_MS = 30 * 1000; // Tempo da partida (IA e Jogador)
-const unsigned long DURACAO_CALIBRACAO_MS = 180 * 1000;
+// --- Interface Serial ---
+char serialBuffer[32];
+int bufferIndex = 0;
+bool systemActive = true;
 
-unsigned long status_update_timer;
-const unsigned long STATUS_UPDATE_INTERVAL_MS = 1000;
+// Estrutura para armazenar configurações originais do PID (simplificada)
+struct {
+    float kp;
+    float ki;
+    float kd;
+} defaultPID = {3.0f, 0.20f, 8.0f};
+ 
+float PID_p = 0.0f, PID_i = 0.0f, PID_d = 0.0f;
+const float INTEGRAL_MAX = 100.0f; // Limite do termo integral (anti-windup)
 
-const unsigned long TEMPO_ESTAVEL_PARA_PONTO_MS = 2000;
-bool bola_na_zona_estavel = false;
-unsigned long tempo_entrada_na_zona;
+// --- Estado do PID ---
+float distance_previous_error = 0.0f;
 
-// --- NOVAS Variáveis para os Beeps ---
-unsigned long heartbeat_timer; // <-- NOVO
-const unsigned long HEARTBEAT_INTERVAL_MS = 5000; // 5 segundos
+// --- Setpoint e Tolerâncias ---
+const float distance_setpoint = 11.35f;
+const float CENTER_DEADBAND = 0.50f;
+const float BEEP_FREQUENCY = 2700;
+
+// --- Histerese do Servo ---
+const int ANGLE_HYSTERESIS = 1;
+int lastCommandedAngle = SERVO_CENTRO;
+
 
 void setup() {
-  // ... (setup continua o mesmo) ...
-  Serial.begin(9600);
+  Serial.begin(115200);
   myservo.attach(9);
-  pinMode(SENSOR_PIN, INPUT);
-  pinMode(ledPin, OUTPUT);
-  pinMode(buzzerPin, OUTPUT);
-  Serial.println("==========================================");
-  Serial.println("=== BEM-VINDO AO DESAFIO DE SINTONIA ZENIT! ===");
-  Serial.println("==========================================");
   myservo.write(SERVO_CENTRO);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  PID_i = 0.0f;
+  distance_previous_error = 0.0f;
   time_prev = millis();
-  status_update_timer = millis();
-  displayStatus();
+  
+  // Menu inicial
+  showMenu();
+}
+
+void showMenu() {
+  Serial.println("\n====== ZENIT - Controle PID (Simples) ======");
+  Serial.println("Comandos Disponiveis:");
+  Serial.println("  p<valor> : Ajusta Kp (ex: p8.0)");
+  Serial.println("  i<valor> : Ajusta Ki (ex: i0.5)");
+  Serial.println("  d<valor> : Ajusta Kd (ex: d4.2)");
+  Serial.println("  l        : Lista os valores PID atuais");
+  Serial.println("  r        : Reseta TODOS os valores PID para o padrao");
+  Serial.println("  s        : Para/Inicia o sistema de controle");
+  Serial.println("  k        : Mostra este menu de ajuda");
+  Serial.println("==========================================");
+}
+
+void processSerialCommand() {
+  if (!Serial.available()) return;
+  
+  char c = Serial.read();
+  if (c == '\n' || c == '\r') {
+    serialBuffer[bufferIndex] = 0;
+    
+    if (bufferIndex > 0) {
+      float value;
+      switch(serialBuffer[0]) {
+        case 'p':
+        case 'P':
+          value = atof(serialBuffer + 1);
+          if (value >= 0) {
+            kp = value; // Ajusta o Kp único
+            Serial.print(" -> Kp ajustado para: "); Serial.println(kp);
+          }
+          break;
+          
+        case 'i':
+        case 'I':
+          value = atof(serialBuffer + 1);
+          if (value >= 0) {
+            ki = value;
+            Serial.print(" -> Ki ajustado para: "); Serial.println(ki);
+          }
+          break;
+          
+        case 'd':
+        case 'D':
+          value = atof(serialBuffer + 1);
+          if (value >= 0) {
+            kd = value;
+            Serial.print(" -> Kd ajustado para: "); Serial.println(kd);
+          }
+          break;
+          
+        case 'k':
+        case 'K':
+          showMenu();
+          break;
+
+        case 'l':
+        case 'L':
+          Serial.println("\n--- Valores Atuais ---");
+          Serial.print("  Kp: "); Serial.println(kp); // Mostra o Kp único
+          Serial.print("  Ki: "); Serial.println(ki);
+          Serial.print("  Kd: "); Serial.println(kd);
+          Serial.println("----------------------");
+          break;
+
+        case 'r':
+        case 'R':
+          // Restaura valores padrão (CORRIGIDO)
+          kp = defaultPID.kp;
+          ki = defaultPID.ki;
+          kd = defaultPID.kd;
+          Serial.println(" -> PID resetado para valores padrao!");
+          break;
+          
+        case 's':
+        case 'S':
+          systemActive = !systemActive;
+          Serial.println(systemActive ? " -> Sistema ATIVADO" : " -> Sistema PARADO");
+          if (!systemActive) {
+            writeServoIfNeeded(SERVO_CENTRO);
+            noTone(BUZZER_PIN);
+            digitalWrite(LED_PIN, LOW);
+          }
+          break;
+      }
+    }
+    bufferIndex = 0;
+  } else if (bufferIndex < sizeof(serialBuffer) - 1) {
+    serialBuffer[bufferIndex++] = c;
+  }
 }
 
 void loop() {
-  // ... (loop continua o mesmo) ...
-  handleSerialInput();
-  if (millis() - status_update_timer >= STATUS_UPDATE_INTERVAL_MS) {
-    displayStatus();
-    status_update_timer = millis();
+  unsigned long now = millis();
+  if (now - time_prev < PERIOD_MS) {
+    processSerialCommand();
+    return;
   }
-  switch (currentState) {
-    case RODADA_MINHA:
-    case RODADA_JOGADOR:
-      runPIDLogic();
-      checkTimer();
-      break;
-    case CALIBRACAO:
-      checkTimer();
-      break;
+  float dt = (now - time_prev) / 1000.0f;
+  if (dt <= 0) dt = 0.001f;
+  time_prev = now;
+
+  processSerialCommand();
+
+  if (!systemActive) {
+    return;
+  }
+
+  // Leitura do sensor "crua", sem filtro
+  float distance = read_distance_raw(5); // Reduzi o número de leituras para uma resposta mais rápida
+
+  if (distance >= NO_BALL_CM) {
+    writeServoIfNeeded(SERVO_CENTRO);
+    digitalWrite(LED_PIN, LOW);
+    noTone(BUZZER_PIN);
+    PID_i = 0.0f;
+    distance_previous_error = 0.0f;
+    return;
+  }
+  
+  if (distance < MIN_CONTROL_CM) {
+    distance = MIN_CONTROL_CM;
+  }
+
+  // Cálculo do erro usando a distância direta
+  float error = distance_setpoint - distance;
+
+  if (fabs(error) <= CENTER_DEADBAND) {
+    writeServoIfNeeded(SERVO_CENTRO);
+    PID_i = 0.0f;
+    distance_previous_error = error;
+    digitalWrite(LED_PIN, HIGH);
+    tone(BUZZER_PIN, BEEP_FREQUENCY); 
+    return;
+  } else {
+    digitalWrite(LED_PIN, LOW); 
+    noTone(BUZZER_PIN);
+  }
+
+  // --- Lógica do Controlador PID (SIMPLIFICADA) ---
+  
+  // P: Proporcional (usa o kp único)
+  PID_p = kp * error;
+
+  // I: Integral (continua igual)
+  PID_i += ki * error * dt;
+  PID_i = constrain(PID_i, -INTEGRAL_MAX, INTEGRAL_MAX);
+
+  // D: Derivativo (cálculo direto, sem filtro)
+  PID_d = kd * ((error - distance_previous_error) / dt);
+
+  // Soma dos termos
+  float pid_output = PID_p + PID_i + PID_d;
+
+  // Saída para o Servo
+  int angulo_final = SERVO_CENTRO + (int)round(pid_output);
+  angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
+  writeServoIfNeeded(angulo_final);
+
+  // Guarda o erro atual para o próximo ciclo
+  distance_previous_error = error;
+}
+
+
+void writeServoIfNeeded(int ang) {
+  if (abs(ang - lastCommandedAngle) >= ANGLE_HYSTERESIS) {
+    myservo.write(ang);
+    lastCommandedAngle = ang;
   }
 }
 
-void runPIDLogic() {
-  // --- NOVO: Lógica do Beep de Suspense ---
-  if (millis() - heartbeat_timer >= HEARTBEAT_INTERVAL_MS) {
-    tone(buzzerPin, 800, 70); // Beep grave e curto
-    heartbeat_timer = millis(); // Reinicia o cronômetro do suspense
-  }
 
-  if (millis() - time_prev >= period) {
-    float dt = (millis() - time_prev) / 1000.0;
-    time_prev = millis();
-    distance = get_dist_manual(50);
-    if (distance >= NO_BALL_CM) {
-      myservo.write(SERVO_CENTRO);
-      digitalWrite(ledPin, LOW);
-      PID_i = 0;
-      distance_previous_error = 0;
-      bola_na_zona_estavel = false;
-      return;
-    }
-    float distance_corrigida = distance;
-    if (distance_corrigida > MAX_CONTROL_CM) {
-      distance_corrigida = MAX_CONTROL_CM;
-    }
-    distance_error = distance_setpoint - distance_corrigida;
-    if (abs(distance_error) <= 0.3) {
-      if (!bola_na_zona_estavel) {
-        bola_na_zona_estavel = true;
-        tempo_entrada_na_zona = millis();
-      }
-      if (bola_na_zona_estavel && (millis() - tempo_entrada_na_zona >= TEMPO_ESTAVEL_PARA_PONTO_MS)) {
-        digitalWrite(ledPin, HIGH);
-        doPointScoredBeep(); // <-- NOVO: Chama o beep duplo
-        if (currentState == RODADA_MINHA) {
-          meuPlacar++;
-        } else if (currentState == RODADA_JOGADOR) {
-          placarJogador++;
-        }
-        tempo_entrada_na_zona = millis();
-      }
-    } else {
-      digitalWrite(ledPin, LOW);
-      bola_na_zona_estavel = false; 
-    }
-    PID_p = kp * distance_error;
-    PID_d = kd * ((distance_error - distance_previous_error) / dt);
-    if (abs(distance_error) < 3) {
-      PID_i += (ki * distance_error * dt);
-    } else {
-      PID_i = 0;
-    }
-    float correcao_pid = PID_p + PID_i + PID_d;
-    int angulo_final = SERVO_CENTRO + correcao_pid;
-    angulo_final = constrain(angulo_final, SERVO_MIN_ANGULO, SERVO_MAX_ANGULO);
-    myservo.write(angulo_final);
-    distance_previous_error = distance_error;
-  }
-}
-
-// --- NOVA Função para o Beep Duplo ---
-void doPointScoredBeep() {
-  tone(buzzerPin, 1200, 100); // Beep 1
-  // Não podemos usar delay aqui para não travar o PID.
-  // O beep de suspense vai servir como separador sonoro.
-  // Para um efeito duplo real, precisaríamos de uma lógica mais complexa.
-  // Por ora, um beep mais longo e distinto marcará o ponto.
-  // Vamos aumentar a duração para ficar bem claro que foi um ponto.
-  // tone(buzzerPin, 1500, 300); // -> Uma alternativa é um beep longo
-}
-
-void checkTimer() {
-  // ... (função checkTimer continua a mesma) ...
-  if ((currentState == RODADA_MINHA || currentState == RODADA_JOGADOR) && (millis() - timerInicio >= DURACAO_RODADA_MS)) {
-    if (currentState == RODADA_MINHA) {
-      Serial.println("\n!!! TEMPO DA IA ENCERRADO !!!");
-      Serial.print("PLACAR DA IA: "); Serial.println(meuPlacar);
-      Serial.println("\n--- MODO CALIBRACAO (3 MINUTOS) ---");
-      Serial.println("Ajuste os valores P, I e D. Envie 'start' para comecar a sua rodada.");
-      currentState = CALIBRACAO;
-      timerInicio = millis();
-    } else {
-      Serial.println("\n!!! TEMPO DO JOGADOR ENCERRADO !!!");
-      Serial.print("SEU PLACAR: "); Serial.println(placarJogador);
-      currentState = FIM_DE_JOGO;
-      Serial.println("\n--- RESULTADO FINAL ---");
-      Serial.print("IA: "); Serial.println(meuPlacar);
-      Serial.print("JOGADOR: "); Serial.println(placarJogador);
-      if (placarJogador > meuPlacar) {
-        Serial.println("\nPARABENS, VOCE VENCEU! PEGUE SUA BALA! :D");
-      } else {
-        Serial.println("\nA IA VENCEU! TENTE NOVAMENTE.");
-      }
-      Serial.println("Envie 'reset' para jogar de novo.");
-    }
-  } else if (currentState == CALIBRACAO && (millis() - timerInicio >= DURACAO_CALIBRACAO_MS)) {
-      Serial.println("\n!!! TEMPO DE CALIBRACAO ENCERRADO !!!");
-      Serial.println("Iniciando a rodada do jogador automaticamente...");
-      currentState = RODADA_JOGADOR;
-      timerInicio = millis();
-      placarJogador = 0;
-      PID_i = 0;
-      distance_previous_error = 0;
-      bola_na_zona_estavel = false;
-      heartbeat_timer = millis();
-      Serial.print("Valores Finais: P="); Serial.print(kp); Serial.print(" I="); Serial.print(ki); Serial.print(" D="); Serial.println(kd);
-      Serial.println("\n--- RODADA DO JOGADOR --- VAI!");
-  }
-}
-
-void handleSerialInput() {
-  if (Serial.available() > 0) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    char command = input.charAt(0);
-    float value = input.substring(1).toFloat();
-    if (input.equalsIgnoreCase("iniciar") || input.equalsIgnoreCase("start") || input.equalsIgnoreCase("reset")) {
-        bola_na_zona_estavel = false;
-        heartbeat_timer = millis(); // <-- NOVO: Zera o timer de suspense
-    }
-    if (input.equalsIgnoreCase("iniciar")) {
-      if (currentState == ESPERA) {
-        kp = kp_base; ki = ki_base; kd = kd_base;
-        Serial.println("\n--- RODADA DA IA ---");
-        currentState = RODADA_MINHA;
-        timerInicio = millis();
-        meuPlacar = 0;
-        PID_i = 0;
-        distance_previous_error = 0;
-      }
-    } else if (input.equalsIgnoreCase("start")) {
-      if (currentState == CALIBRACAO) {
-        Serial.println("\n--- RODADA DO JOGADOR --- VAI!");
-        currentState = RODADA_JOGADOR;
-        timerInicio = millis();
-        placarJogador = 0;
-        PID_i = 0;
-        distance_previous_error = 0;
-      }
-    } else if (input.equalsIgnoreCase("reset")) {
-      if (currentState == FIM_DE_JOGO) {
-        Serial.println("\nJogo reiniciado! Envie 'iniciar' para uma nova partida.");
-        currentState = ESPERA;
-        displayStatus();
-      }
-    } else if (command == 'p' || command == 'P') {
-      kp = value;
-      Serial.print(">>> Kp definido para: "); Serial.println(kp);
-    } else if (command == 'i' || command == 'I') {
-      ki = value;
-      Serial.print(">>> Ki definido para: "); Serial.println(ki);
-    } else if (command == 'd' || command == 'D') {
-      kd = value;
-      Serial.print(">>> Kd definido para: "); Serial.println(kd);
-    }
-  }
-}
-
-void displayStatus() {
-  // ... (função displayStatus continua a mesma) ...
-  Serial.print("[MODO: ");
-  switch (currentState) {
-    case ESPERA: Serial.print("ESPERA | Envie 'iniciar'."); break;
-    case RODADA_MINHA: {
-      unsigned long tempoRestante = (DURACAO_RODADA_MS - (millis() - timerInicio)) / 1000;
-      Serial.print("RODADA IA"); Serial.print(" | TEMPO: "); Serial.print(tempoRestante);
-      Serial.print("s | PLACAR IA: "); Serial.print(meuPlacar);
-      } break;
-    case CALIBRACAO: {
-      unsigned long tempoRestante = (DURACAO_CALIBRACAO_MS - (millis() - timerInicio)) / 1000;
-      Serial.print("CALIBRACAO"); Serial.print(" | TEMPO: "); Serial.print(tempoRestante);
-      Serial.print("s");
-      } break;
-    case RODADA_JOGADOR: {
-      unsigned long tempoRestante = (DURACAO_RODADA_MS - (millis() - timerInicio)) / 1000;
-      Serial.print("RODADA JOGADOR"); Serial.print(" | TEMPO: "); Serial.print(tempoRestante);
-      Serial.print("s | PLACAR: "); Serial.print(placarJogador);
-      } break;
-    case FIM_DE_JOGO: Serial.print("FIM DE JOGO | Envie 'reset'."); break;
-  }
-  if (currentState != ESPERA) {
-    Serial.print(" | P:"); Serial.print(kp, 2); Serial.print(" I:"); Serial.print(ki, 2);
-    Serial.print(" D:"); Serial.print(kd, 2);
-  }
-  Serial.println("]");
-}
-
-float get_dist_manual(int num_leituras) {
-  // ... (função get_dist_manual continua a mesma) ...
+float read_distance_raw(int n) {
   long sum = 0;
-  if (num_leituras <= 1) { sum = analogRead(SENSOR_PIN); } 
-  else { for (int i = 0; i < num_leituras; i++) { sum += analogRead(SENSOR_PIN); } }
-  float adc = (float)sum / (float)num_leituras;
-  float distance_cm = 6787.0 / (adc - 3.0) - 4.0;
-  if (distance_cm < 0 || distance_cm > 100) { return NO_BALL_CM; }
+  for (int i = 0; i < n; i++) {
+    sum += analogRead(SENSOR_PIN);
+    delay(1); // Delay mínimo
+  }
+  float adc = (float)sum / (float)n;
+  float distance_cm = 6787.0 / (adc - 3.0) - 4.0; 
+  
+  if (distance_cm < 0.0f || distance_cm > 100.0f) {
+    return NO_BALL_CM;
+  }
   return distance_cm;
 }
